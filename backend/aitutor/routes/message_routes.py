@@ -17,6 +17,7 @@ from schemas.message_schema import (
     SendMessageRequest,
 )
 from services.ai_services import (
+    generate_flashcard_payload,
     generate_ai_reply_with_mode,
     generate_quiz_feedback_reply,
     generate_quiz_payload,
@@ -228,7 +229,13 @@ def _is_subject_control_message(value: str) -> bool:
     lowered = value.strip().lower()
     if lowered == "summarize" or lowered.startswith("summarize "):
         return True
-    return lowered in {"quiz me", "test me"}
+    if lowered in {"quiz me", "test me"}:
+        return True
+
+    if "flashcard" in lowered or "flash card" in lowered or "study card" in lowered:
+        return True
+
+    return False
 
 
 def _is_quiz_request(value: str) -> bool:
@@ -240,6 +247,17 @@ def _is_quiz_request(value: str) -> bool:
         return True
 
     return bool(re.search(r"\bquiz\b\s+(?:on|about)\b", lowered))
+
+
+def _is_flashcard_request(value: str) -> bool:
+    lowered = value.strip().lower()
+    if "flashcard" in lowered or "flash card" in lowered:
+        return True
+
+    if re.search(r"\b(?:make|create|generate|give)\b.*\bflash\s*cards?\b", lowered):
+        return True
+
+    return bool(re.search(r"\bflash\s*cards?\b\s+(?:on|about|for)\b", lowered))
 
 
 def _should_block_for_subject(user_message: str, session_subject: str) -> bool:
@@ -509,8 +527,80 @@ async def send_message(
             response["new_title"] = new_title
         return response
 
+    is_flashcard = _is_flashcard_request(payload.content)
     is_quiz = _is_quiz_request(payload.content)
     is_summary = content_lower.strip() == "summarize" or content_lower.strip().startswith("summarize ")
+
+    if is_flashcard:
+        flashcard_data = await generate_flashcard_payload(
+            message=prompt_for_api,
+            context=context,
+            difficulty_level=difficulty,
+            session_subject=session_subject,
+        )
+
+        if str(flashcard_data.get("type", "")).strip().lower() != "flashcard":
+            refusal_text = str(flashcard_data.get("content", "")).strip()
+            if not refusal_text:
+                refusal_text = "I can only create flashcards for study or education-related topics."
+
+            assistant_message = Message.create(
+                chat_id=chat_id,
+                user_id=user_id,
+                role="assistant",
+                content=refusal_text,
+            )
+            assistant_document = assistant_message.to_document()
+            assistant_document["message_index"] = assistant_index
+            assistant_document["ai_generated"] = True
+            assistant_document["was_stopped"] = False
+            if response_level:
+                assistant_document["response_level"] = response_level
+            result = await db["messages"].insert_one(assistant_document)
+
+            response = {
+                "type": "text",
+                "content": refusal_text,
+                "chat_id": str(chat_id),
+                "user_id": str(user_id),
+                "message_id": str(result.inserted_id),
+                "message_index": assistant_index,
+                "pending": False,
+                "response_level": response_level,
+            }
+            if new_title:
+                response["new_title"] = new_title
+            return response
+
+        card_count = len(flashcard_data.get("cards", []))
+        flashcard_summary = (
+            f"📚 Flashcards: {flashcard_data.get('topic', 'Topic')} — {card_count} cards generated."
+        )
+        assistant_message = Message.create(
+            chat_id=chat_id, user_id=user_id, role="assistant", content=flashcard_summary,
+        )
+        assistant_document = assistant_message.to_document()
+        assistant_document["message_index"] = assistant_index
+        assistant_document["ai_generated"] = True
+        assistant_document["was_stopped"] = False
+        if response_level:
+            assistant_document["response_level"] = response_level
+        result = await db["messages"].insert_one(assistant_document)
+
+        response = {
+            "type": "flashcard",
+            "content": flashcard_summary,
+            "chat_id": str(chat_id),
+            "user_id": str(user_id),
+            "message_id": str(result.inserted_id),
+            "message_index": assistant_index,
+            "pending": False,
+            "flashcard": flashcard_data,
+            "response_level": response_level,
+        }
+        if new_title:
+            response["new_title"] = new_title
+        return response
 
     if is_quiz:
         # Generate structured quiz JSON

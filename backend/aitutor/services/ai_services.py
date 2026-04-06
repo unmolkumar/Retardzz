@@ -21,6 +21,14 @@ QUIZ_TOPIC_PATTERNS = (
     re.compile(r"quiz\s+me\s+(?:on|about)\s+(.+)", re.IGNORECASE),
     re.compile(r"test\s+me\s+(?:on|about)\s+(.+)", re.IGNORECASE),
 )
+FLASHCARD_TOPIC_PATTERNS = (
+    re.compile(
+        r"(?:make|create|generate)\s+(?:me\s+)?(?:some\s+)?flash\s*cards?\s+(?:on|about|for)\s+(.+)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"flash\s*cards?\s+(?:on|about|for)\s+(.+)", re.IGNORECASE),
+    re.compile(r"study\s+cards?\s+(?:on|about|for)\s+(.+)", re.IGNORECASE),
+)
 
 # System prompt for normal conversational tutoring mode.
 SYSTEM_PROMPT = """You are Saivo, a friendly and smart AI tutor built to help students learn effectively.
@@ -272,6 +280,26 @@ def _extract_quiz_topic(message: str) -> str | None:
     return None
 
 
+def _extract_flashcard_topic(message: str) -> str | None:
+    for pattern in FLASHCARD_TOPIC_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+
+        candidate = match.group(1).strip(" .,!?:;\n\t")
+        if candidate:
+            return candidate[:120]
+
+    # Handle compact forms like "flashcards on photosynthesis"
+    compact_match = re.search(r"\bflash\s*cards?\b\s+(?:on|about|for)\s+(.+)", message, re.IGNORECASE)
+    if compact_match:
+        candidate = compact_match.group(1).strip(" .,!?:;\n\t")
+        if candidate:
+            return candidate[:120]
+
+    return None
+
+
 def _extract_refusal_text(raw_reply: str) -> str | None:
     stripped = raw_reply.strip()
     if not stripped:
@@ -369,6 +397,81 @@ def _normalize_quiz_payload(payload: dict[str, Any] | None, topic: str) -> dict[
         "type": "quiz",
         "topic": topic_value,
         "questions": normalized_questions,
+    }
+
+
+def _fallback_flashcard_payload(topic: str) -> dict[str, Any]:
+    return {
+        "type": "flashcard",
+        "topic": topic,
+        "cards": [
+            {
+                "id": "c1",
+                "front": f"What is the core idea of {topic}?",
+                "back": "Understand the main concept first, then build details step by step.",
+            },
+            {
+                "id": "c2",
+                "front": f"Why is {topic} important for learners?",
+                "back": "It helps solve problems by connecting theory with practical application.",
+            },
+            {
+                "id": "c3",
+                "front": f"Name one effective way to practice {topic}.",
+                "back": "Use short daily practice sessions with active recall questions.",
+            },
+            {
+                "id": "c4",
+                "front": f"What is a common mistake while studying {topic}?",
+                "back": "Memorizing without understanding definitions, examples, and relationships.",
+            },
+            {
+                "id": "c5",
+                "front": f"How can you retain {topic} for longer?",
+                "back": "Review with spaced repetition and explain concepts in your own words.",
+            },
+        ],
+    }
+
+
+def _normalize_flashcard_payload(payload: dict[str, Any] | None, topic: str) -> dict[str, Any]:
+    fallback = _fallback_flashcard_payload(topic)
+    if not isinstance(payload, dict):
+        return fallback
+
+    if str(payload.get("type", "")).strip().lower() != "flashcard":
+        return fallback
+
+    raw_cards = payload.get("cards")
+    if not isinstance(raw_cards, list) or len(raw_cards) < 5:
+        return fallback
+
+    normalized_cards: list[dict[str, str]] = []
+    for index, raw_card in enumerate(raw_cards[:5], start=1):
+        if not isinstance(raw_card, dict):
+            continue
+
+        front = str(raw_card.get("front", "")).strip()
+        back = str(raw_card.get("back", "")).strip()
+        if not front or not back:
+            continue
+
+        normalized_cards.append(
+            {
+                "id": f"c{index}",
+                "front": front,
+                "back": back,
+            }
+        )
+
+    if len(normalized_cards) != 5:
+        return fallback
+
+    topic_value = str(payload.get("topic", "")).strip() or topic
+    return {
+        "type": "flashcard",
+        "topic": topic_value,
+        "cards": normalized_cards,
     }
 
 
@@ -579,6 +682,84 @@ async def generate_quiz_payload(
             }
 
     return _normalize_quiz_payload(parsed, topic)
+
+
+async def generate_flashcard_payload(
+    message: str,
+    context: Sequence[str],
+    difficulty_level: str,
+    session_subject: str = "Anyone",
+) -> dict[str, Any]:
+    """Generate a structured 5-card flashcard payload."""
+    normalized_difficulty = _normalize_difficulty(difficulty_level)
+    normalized_subject = _normalize_session_subject(session_subject)
+    topic = _extract_flashcard_topic(message) or _infer_topic_from_context(context)
+    runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
+
+    flashcard_system_prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"{runtime_instructions}\n\n"
+        "You are creating flashcards for study and education use only.\n"
+        "Step 1: Verify whether the requested topic is study or education related.\n"
+        "If it is NOT study/education related, politely refuse in one short sentence.\n"
+        "Step 2: If the topic is valid, return the flashcards in this exact JSON format and nothing else:\n"
+        "{\n"
+        "  \"type\": \"flashcard\",\n"
+        "  \"topic\": \"topic name\",\n"
+        "  \"cards\": [\n"
+        "    {\n"
+        "      \"front\": \"prompt/question side\",\n"
+        "      \"back\": \"answer/explanation side\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Generate exactly 5 cards.\n"
+        "Return only JSON for valid topics, with no markdown and no extra text."
+    )
+
+    flashcard_user_prompt = (
+        f"Current topic for flashcards: {topic}\n"
+        f"User request: {message}\n"
+        "Generate the flashcards now."
+    )
+
+    raw_reply = await _call_groq(
+        messages=[
+            {"role": "system", "content": flashcard_system_prompt},
+            {"role": "user", "content": flashcard_user_prompt},
+        ],
+        temperature=0.5,
+    )
+
+    if not raw_reply:
+        return _fallback_flashcard_payload(topic)
+
+    parsed = _parse_json_object(raw_reply)
+    if not parsed:
+        refusal = _extract_refusal_text(raw_reply)
+        if refusal:
+            return {
+                "type": "text",
+                "content": refusal,
+            }
+
+        if "{" not in raw_reply and "[" not in raw_reply:
+            return {
+                "type": "text",
+                "content": raw_reply.strip(),
+            }
+
+        return _fallback_flashcard_payload(topic)
+
+    if str(parsed.get("type", "")).strip().lower() != "flashcard":
+        refusal = str(parsed.get("content", "")).strip()
+        if refusal:
+            return {
+                "type": "text",
+                "content": refusal,
+            }
+
+    return _normalize_flashcard_payload(parsed, topic)
 
 
 async def generate_summary_payload(

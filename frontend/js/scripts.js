@@ -771,6 +771,27 @@ function isQuizRequestPrompt(content) {
 	return /\bquiz\b\s+(?:on|about)\b/.test(lowered);
 }
 
+function isFlashcardRequestPrompt(content) {
+	if (typeof content !== "string") {
+		return false;
+	}
+
+	const lowered = content.trim().toLowerCase();
+	if (!lowered) {
+		return false;
+	}
+
+	if (lowered.includes("flashcard") || lowered.includes("flash card") || lowered.includes("study card")) {
+		return true;
+	}
+
+	if (/\b(?:make|create|generate|give)\b.*\bflash\s*cards?\b/.test(lowered)) {
+		return true;
+	}
+
+	return /\bflash\s*cards?\b\s+(?:on|about|for)\b/.test(lowered);
+}
+
 function showThinkingIndicator(mode = "normal") {
 	removeEmptyState();
 
@@ -802,6 +823,22 @@ function showThinkingIndicator(mode = "normal") {
 		for (let i = 0; i < 5; i++) {
 			const bar = document.createElement("span");
 			bar.classList.add("quiz-thinking-bar");
+			bars.appendChild(bar);
+		}
+		thinkingBox.appendChild(bars);
+	} else if (mode === "flashcard") {
+		thinkingBox.classList.add("thinking-box-flashcard");
+
+		const flashcardLabel = document.createElement("div");
+		flashcardLabel.classList.add("thinking-flashcard-label");
+		flashcardLabel.textContent = "Generating Flashcards...";
+		thinkingBox.appendChild(flashcardLabel);
+
+		const bars = document.createElement("div");
+		bars.classList.add("flashcard-thinking-bars");
+		for (let i = 0; i < 5; i++) {
+			const bar = document.createElement("span");
+			bar.classList.add("flashcard-thinking-bar");
 			bars.appendChild(bar);
 		}
 		thinkingBox.appendChild(bars);
@@ -1521,9 +1558,10 @@ async function loadMessages() {
 	}
 
 	try {
-		const [messagesPayload, quizzesPayload] = await Promise.all([
+		const [messagesPayload, quizzesPayload, flashcardsPayload] = await Promise.all([
 			apiFetch(`/messages/${state.activeChatId}`),
 			apiFetch(`/quizzes/chat/${state.activeChatId}`).catch(() => ({ quizzes: [] })),
+			apiFetch(`/flashcards/chat/${state.activeChatId}`).catch(() => ({ flashcards: [] })),
 		]);
 
 		const allMessages = Array.isArray(messagesPayload) ? [...messagesPayload] : [];
@@ -1541,20 +1579,29 @@ async function loadMessages() {
 			.filter((quiz) => !!quiz);
 		const quizzesByIndex = buildQuizIndexMap(quizzes);
 
+		const rawFlashcards = Array.isArray(flashcardsPayload && flashcardsPayload.flashcards)
+			? flashcardsPayload.flashcards
+			: [];
+		const flashcards = rawFlashcards
+			.map((rawFlashcard) => normalizeStoredFlashcardRecord(rawFlashcard))
+			.filter((flashcard) => !!flashcard);
+		const flashcardsByIndex = buildFlashcardIndexMap(flashcards);
+
 		messagesContainer.innerHTML = "";
 
-		if (allMessages.length > 0 || quizzes.length > 0) {
+		if (allMessages.length > 0 || quizzes.length > 0 || flashcards.length > 0) {
 			hideWelcomeScreen();  // Hide welcome when chat has messages
 			allMessages.forEach((msg, fallbackIndex) => {
 				const messageIndex = Number.isInteger(msg && msg.message_index)
 					? msg.message_index
 					: fallbackIndex;
 
-				if (!isQuizSummaryMessage(msg)) {
+				if (!isQuizSummaryMessage(msg) && !isFlashcardSummaryMessage(msg)) {
 					appendMessage(msg, false);
 				}
 
 				renderQuizzesAtMessageIndex(quizzesByIndex, messageIndex, null, false);
+				renderFlashcardsAtMessageIndex(flashcardsByIndex, messageIndex, null, false);
 			});
 
 			chatArea.scrollTop = chatArea.scrollHeight;
@@ -1623,7 +1670,9 @@ async function sendMessage(content) {
 	chatArea.scrollTop = chatArea.scrollHeight;
 
 	const thinkingStartTime = Date.now();
-	const thinkingMode = isQuizRequestPrompt(trimmedContent) ? "quiz" : "normal";
+	const thinkingMode = isFlashcardRequestPrompt(trimmedContent)
+		? "flashcard"
+		: (isQuizRequestPrompt(trimmedContent) ? "quiz" : "normal");
 	showThinkingIndicator(thinkingMode);
 
 	try {
@@ -1663,9 +1712,33 @@ async function sendMessage(content) {
 				}
 
 				const responseType = response.type || "text";
+				const flashcardPayload = extractFlashcardPayloadFromResponse(response);
 				const quizPayload = extractQuizPayloadFromResponse(response);
 
-				if (quizPayload) {
+				if (flashcardPayload) {
+					// --- FLASHCARD RESPONSE (LAUNCHER CARD) ---
+					hideWelcomeScreen();
+					removeEmptyState();
+					isGenerating = false;
+					generatingChatId = null;
+					hideStopButton();
+
+					let persistedFlashcardMeta = null;
+					try {
+						persistedFlashcardMeta = await saveFlashcardsForChat(flashcardPayload, response);
+					} catch (persistError) {
+						console.error("Failed to persist flashcards:", persistError);
+					}
+
+					renderFlashcardLauncherCard(
+						flashcardPayload,
+						responseLevel,
+						persistedFlashcardMeta || {},
+						true,
+					);
+					chatArea.scrollTop = chatArea.scrollHeight;
+
+				} else if (quizPayload) {
 					// --- QUIZ RESPONSE (LAUNCHER CARD) ---
 					hideWelcomeScreen();
 					removeEmptyState();
@@ -1745,6 +1818,225 @@ async function sendMessage(content) {
 /**
  * Attempts to parse quiz JSON from assistant content.
  */
+function parseFlashcardJsonContent(content) {
+	if (typeof content !== "string") {
+		return null;
+	}
+
+	const trimmed = content.trim();
+	if (!trimmed) {
+		return null;
+	}
+
+	let candidate = trimmed;
+	const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+	if (fenced && fenced[1]) {
+		candidate = fenced[1].trim();
+	}
+
+	try {
+		const parsed = JSON.parse(candidate);
+		return normalizeFlashcardPayload(parsed);
+	} catch (_error) {
+		return null;
+	}
+}
+
+function normalizeFlashcardPayload(rawFlashcard) {
+	if (!rawFlashcard || typeof rawFlashcard !== "object") {
+		return null;
+	}
+
+	const type = String(rawFlashcard.type || "").trim().toLowerCase();
+	if (type !== "flashcard") {
+		return null;
+	}
+
+	const topic = typeof rawFlashcard.topic === "string" && rawFlashcard.topic.trim()
+		? rawFlashcard.topic.trim()
+		: "General Topic";
+
+	if (!Array.isArray(rawFlashcard.cards) || rawFlashcard.cards.length === 0) {
+		return null;
+	}
+
+	const normalizedCards = [];
+	rawFlashcard.cards.forEach((rawCard, index) => {
+		if (!rawCard || typeof rawCard !== "object") {
+			return;
+		}
+
+		const front = typeof rawCard.front === "string" ? rawCard.front.trim() : "";
+		const back = typeof rawCard.back === "string" ? rawCard.back.trim() : "";
+		if (!front || !back) {
+			return;
+		}
+
+		normalizedCards.push({
+			id: typeof rawCard.id === "string" && rawCard.id.trim() ? rawCard.id.trim() : `c${index + 1}`,
+			front,
+			back,
+		});
+	});
+
+	if (normalizedCards.length === 0) {
+		return null;
+	}
+
+	return {
+		type: "flashcard",
+		topic,
+		cards: normalizedCards,
+	};
+}
+
+function extractFlashcardPayloadFromResponse(response) {
+	if (!response || typeof response !== "object") {
+		return null;
+	}
+
+	if (response.flashcard) {
+		const normalizedFlashcard = normalizeFlashcardPayload(response.flashcard);
+		if (normalizedFlashcard) {
+			return normalizedFlashcard;
+		}
+	}
+
+	if (typeof response.content === "string") {
+		return parseFlashcardJsonContent(response.content);
+	}
+
+	return null;
+}
+
+function isFlashcardSummaryText(content) {
+	if (typeof content !== "string") {
+		return false;
+	}
+	return content.trim().startsWith("📚 Flashcards:");
+}
+
+function isFlashcardSummaryMessage(message) {
+	if (!message || typeof message !== "object") {
+		return false;
+	}
+	return message.role === "assistant" && isFlashcardSummaryText(message.content);
+}
+
+function buildFlashcardSavePayload(flashcardData) {
+	const normalizedFlashcard = normalizeFlashcardPayload(flashcardData);
+	if (!normalizedFlashcard) {
+		return null;
+	}
+
+	const cards = normalizedFlashcard.cards.map((card) => ({
+		front: card.front,
+		back: card.back,
+	}));
+
+	return {
+		topic: normalizedFlashcard.topic,
+		cards,
+	};
+}
+
+async function saveFlashcardsForChat(flashcardData, responsePayload) {
+	if (!state.userId || !state.activeChatId) {
+		return null;
+	}
+
+	const flashcardSavePayload = buildFlashcardSavePayload(flashcardData);
+	if (!flashcardSavePayload) {
+		return null;
+	}
+
+	const responseMessageIndex = responsePayload && responsePayload.message_index;
+	const messageIndex = Number.isInteger(responseMessageIndex)
+		? responseMessageIndex
+		: null;
+
+	if (messageIndex === null || messageIndex < 0) {
+		console.error("Cannot persist flashcards without a valid message_index from backend response");
+		return null;
+	}
+
+	const savedFlashcards = await apiFetch("/flashcards", {
+		method: "POST",
+		body: {
+			user_id: state.userId,
+			chat_id: state.activeChatId,
+			message_index: messageIndex,
+			topic: flashcardSavePayload.topic,
+			cards: flashcardSavePayload.cards,
+		},
+	});
+
+	if (!savedFlashcards || typeof savedFlashcards !== "object") {
+		return null;
+	}
+
+	return {
+		flashcardId: savedFlashcards.flashcard_id || null,
+		messageIndex: typeof savedFlashcards.message_index === "number" ? savedFlashcards.message_index : messageIndex,
+	};
+}
+
+function normalizeStoredFlashcardRecord(rawFlashcards) {
+	if (!rawFlashcards || typeof rawFlashcards !== "object") {
+		return null;
+	}
+
+	const rawCards = Array.isArray(rawFlashcards.cards) ? rawFlashcards.cards : [];
+	const preparedCards = rawCards.map((card, index) => ({
+		id: typeof card.id === "string" ? card.id : `c${index + 1}`,
+		front: card.front,
+		back: card.back,
+	}));
+
+	const normalizedFlashcards = normalizeFlashcardPayload({
+		type: "flashcard",
+		topic: rawFlashcards.topic,
+		cards: preparedCards,
+	});
+
+	if (!normalizedFlashcards) {
+		return null;
+	}
+
+	return {
+		flashcard_id: typeof rawFlashcards.flashcard_id === "string" ? rawFlashcards.flashcard_id : "",
+		message_index: Number.isInteger(rawFlashcards.message_index) ? rawFlashcards.message_index : 0,
+		flashcard: normalizedFlashcards,
+	};
+}
+
+function buildFlashcardIndexMap(flashcards) {
+	const flashcardMap = new Map();
+	flashcards.forEach((flashcardRecord) => {
+		const index = flashcardRecord.message_index;
+		if (!flashcardMap.has(index)) {
+			flashcardMap.set(index, []);
+		}
+		flashcardMap.get(index).push(flashcardRecord);
+	});
+	return flashcardMap;
+}
+
+function renderFlashcardsAtMessageIndex(flashcardMap, messageIndex, responseLevel = null, autoScroll = false) {
+	const flashcardRecords = flashcardMap.get(messageIndex) || [];
+	flashcardRecords.forEach((flashcardRecord) => {
+		renderFlashcardLauncherCard(
+			flashcardRecord.flashcard,
+			responseLevel,
+			{
+				flashcardId: flashcardRecord.flashcard_id,
+				messageIndex: flashcardRecord.message_index,
+			},
+			autoScroll,
+		);
+	});
+}
+
 function parseQuizJsonContent(content) {
 	if (typeof content !== "string") {
 		return null;
@@ -2012,6 +2304,403 @@ function renderQuizzesAtMessageIndex(quizMap, messageIndex, responseLevel = null
 			autoScroll,
 		);
 	});
+}
+
+const flashcardModalState = {
+	overlay: null,
+	topic: null,
+	loadingView: null,
+	loadingBar: null,
+	contentView: null,
+	counter: null,
+	cardInner: null,
+	frontFace: null,
+	backFace: null,
+	flipBtn: null,
+	prevBtn: null,
+	nextBtn: null,
+	closeFooterBtn: null,
+	flashcardData: null,
+	flashcardId: null,
+	currentIndex: 0,
+	isFlipped: false,
+	loadingTimeout: null,
+};
+
+function ensureFlashcardModal() {
+	if (flashcardModalState.overlay) {
+		return flashcardModalState;
+	}
+
+	const overlay = document.createElement("div");
+	overlay.id = "flashcard-modal-overlay";
+	overlay.className = "flashcard-modal-overlay";
+	overlay.setAttribute("aria-hidden", "true");
+	overlay.setAttribute("role", "dialog");
+
+	const modal = document.createElement("div");
+	modal.className = "flashcard-modal";
+
+	const header = document.createElement("div");
+	header.className = "flashcard-modal-header";
+
+	const titleWrap = document.createElement("div");
+	titleWrap.className = "flashcard-modal-title-wrap";
+
+	const title = document.createElement("h3");
+	title.className = "flashcard-modal-title";
+	title.textContent = "Flashcards";
+	titleWrap.appendChild(title);
+
+	const topic = document.createElement("div");
+	topic.className = "flashcard-modal-topic";
+	topic.textContent = "General Topic";
+	titleWrap.appendChild(topic);
+	header.appendChild(titleWrap);
+
+	const closeBtn = document.createElement("button");
+	closeBtn.type = "button";
+	closeBtn.className = "flashcard-modal-close";
+	closeBtn.textContent = "Close";
+	header.appendChild(closeBtn);
+
+	const loadingView = document.createElement("div");
+	loadingView.className = "flashcard-loading-view";
+
+	const loadingLabel = document.createElement("div");
+	loadingLabel.className = "flashcard-loading-label";
+	loadingLabel.textContent = "Preparing your flashcards...";
+	loadingView.appendChild(loadingLabel);
+
+	const loadingTrack = document.createElement("div");
+	loadingTrack.className = "flashcard-loading-track";
+	const loadingBar = document.createElement("div");
+	loadingBar.className = "flashcard-loading-bar";
+	loadingTrack.appendChild(loadingBar);
+	loadingView.appendChild(loadingTrack);
+
+	const contentView = document.createElement("div");
+	contentView.className = "flashcard-modal-content";
+	contentView.hidden = true;
+
+	const counter = document.createElement("div");
+	counter.className = "flashcard-modal-counter";
+	contentView.appendChild(counter);
+
+	const stage = document.createElement("div");
+	stage.className = "flashcard-stage";
+
+	const cardInner = document.createElement("div");
+	cardInner.className = "flashcard-3d";
+
+	const frontFace = document.createElement("div");
+	frontFace.className = "flashcard-face flashcard-face-front";
+	cardInner.appendChild(frontFace);
+
+	const backFace = document.createElement("div");
+	backFace.className = "flashcard-face flashcard-face-back";
+	cardInner.appendChild(backFace);
+
+	stage.appendChild(cardInner);
+	contentView.appendChild(stage);
+
+	const flipBtn = document.createElement("button");
+	flipBtn.type = "button";
+	flipBtn.className = "flashcard-flip-btn";
+	flipBtn.textContent = "Flip Card";
+	contentView.appendChild(flipBtn);
+
+	const footer = document.createElement("div");
+	footer.className = "flashcard-modal-footer";
+
+	const prevBtn = document.createElement("button");
+	prevBtn.type = "button";
+	prevBtn.className = "flashcard-modal-nav-btn";
+	prevBtn.textContent = "Previous";
+	footer.appendChild(prevBtn);
+
+	const nextBtn = document.createElement("button");
+	nextBtn.type = "button";
+	nextBtn.className = "flashcard-modal-nav-btn";
+	nextBtn.textContent = "Next";
+	footer.appendChild(nextBtn);
+
+	const closeFooterBtn = document.createElement("button");
+	closeFooterBtn.type = "button";
+	closeFooterBtn.className = "flashcard-modal-close-footer";
+	closeFooterBtn.textContent = "Close";
+	footer.appendChild(closeFooterBtn);
+
+	contentView.appendChild(footer);
+
+	modal.appendChild(header);
+	modal.appendChild(loadingView);
+	modal.appendChild(contentView);
+	overlay.appendChild(modal);
+	document.body.appendChild(overlay);
+
+	flashcardModalState.overlay = overlay;
+	flashcardModalState.topic = topic;
+	flashcardModalState.loadingView = loadingView;
+	flashcardModalState.loadingBar = loadingBar;
+	flashcardModalState.contentView = contentView;
+	flashcardModalState.counter = counter;
+	flashcardModalState.cardInner = cardInner;
+	flashcardModalState.frontFace = frontFace;
+	flashcardModalState.backFace = backFace;
+	flashcardModalState.flipBtn = flipBtn;
+	flashcardModalState.prevBtn = prevBtn;
+	flashcardModalState.nextBtn = nextBtn;
+	flashcardModalState.closeFooterBtn = closeFooterBtn;
+
+	overlay.addEventListener("click", (event) => {
+		if (event.target === overlay) {
+			closeFlashcardModal();
+		}
+	});
+
+	closeBtn.addEventListener("click", closeFlashcardModal);
+	closeFooterBtn.addEventListener("click", closeFlashcardModal);
+
+	flipBtn.addEventListener("click", () => {
+		if (!flashcardModalState.flashcardData) {
+			return;
+		}
+		flashcardModalState.isFlipped = !flashcardModalState.isFlipped;
+		if (flashcardModalState.cardInner) {
+			flashcardModalState.cardInner.classList.toggle("flipped", flashcardModalState.isFlipped);
+		}
+		flashcardModalState.flipBtn.textContent = flashcardModalState.isFlipped ? "Show Front" : "Flip Card";
+	});
+
+	prevBtn.addEventListener("click", () => {
+		if (!flashcardModalState.flashcardData || flashcardModalState.currentIndex <= 0) {
+			return;
+		}
+		flashcardModalState.currentIndex -= 1;
+		flashcardModalState.isFlipped = false;
+		renderFlashcardModalCard();
+	});
+
+	nextBtn.addEventListener("click", () => {
+		if (!flashcardModalState.flashcardData) {
+			return;
+		}
+		const maxIndex = flashcardModalState.flashcardData.cards.length - 1;
+		if (flashcardModalState.currentIndex >= maxIndex) {
+			return;
+		}
+		flashcardModalState.currentIndex += 1;
+		flashcardModalState.isFlipped = false;
+		renderFlashcardModalCard();
+	});
+
+	return flashcardModalState;
+}
+
+function handleFlashcardModalKeydown(event) {
+	if (event.key === "Escape" && flashcardModalState.overlay && flashcardModalState.overlay.classList.contains("active")) {
+		event.preventDefault();
+		closeFlashcardModal();
+	}
+}
+
+function renderFlashcardModalCard() {
+	if (
+		!flashcardModalState.flashcardData ||
+		!flashcardModalState.counter ||
+		!flashcardModalState.frontFace ||
+		!flashcardModalState.backFace
+	) {
+		return;
+	}
+
+	const cards = flashcardModalState.flashcardData.cards;
+	const index = flashcardModalState.currentIndex;
+	const activeCard = cards[index];
+	if (!activeCard) {
+		return;
+	}
+
+	flashcardModalState.counter.textContent = `Card ${index + 1} of ${cards.length}`;
+	flashcardModalState.frontFace.textContent = activeCard.front;
+	flashcardModalState.backFace.textContent = activeCard.back;
+
+	if (flashcardModalState.cardInner) {
+		flashcardModalState.cardInner.classList.toggle("flipped", flashcardModalState.isFlipped);
+	}
+	if (flashcardModalState.flipBtn) {
+		flashcardModalState.flipBtn.textContent = flashcardModalState.isFlipped ? "Show Front" : "Flip Card";
+	}
+	if (flashcardModalState.prevBtn) {
+		flashcardModalState.prevBtn.disabled = index === 0;
+	}
+	if (flashcardModalState.nextBtn) {
+		flashcardModalState.nextBtn.disabled = index === cards.length - 1;
+	}
+}
+
+function openFlashcardModal(flashcardData, metadata = {}) {
+	const normalizedFlashcard = normalizeFlashcardPayload(flashcardData);
+	if (!normalizedFlashcard) {
+		return;
+	}
+
+	ensureFlashcardModal();
+
+	flashcardModalState.flashcardData = normalizedFlashcard;
+	flashcardModalState.flashcardId =
+		typeof metadata.flashcardId === "string" && metadata.flashcardId ? metadata.flashcardId : null;
+	flashcardModalState.currentIndex = 0;
+	flashcardModalState.isFlipped = false;
+
+	if (flashcardModalState.topic) {
+		flashcardModalState.topic.textContent = normalizedFlashcard.topic;
+	}
+
+	if (flashcardModalState.overlay) {
+		flashcardModalState.overlay.classList.add("active");
+		flashcardModalState.overlay.setAttribute("aria-hidden", "false");
+	}
+
+	document.body.classList.add("flashcard-modal-open");
+	document.addEventListener("keydown", handleFlashcardModalKeydown);
+
+	if (flashcardModalState.loadingTimeout) {
+		clearTimeout(flashcardModalState.loadingTimeout);
+	}
+
+	if (flashcardModalState.loadingView && flashcardModalState.contentView && flashcardModalState.loadingBar) {
+		flashcardModalState.loadingView.hidden = false;
+		flashcardModalState.contentView.hidden = true;
+
+		flashcardModalState.loadingBar.style.transition = "none";
+		flashcardModalState.loadingBar.style.width = "0%";
+		void flashcardModalState.loadingBar.offsetWidth;
+		flashcardModalState.loadingBar.style.transition = "width 1.5s linear";
+		flashcardModalState.loadingBar.style.width = "100%";
+	}
+
+	flashcardModalState.loadingTimeout = setTimeout(() => {
+		if (flashcardModalState.loadingView) {
+			flashcardModalState.loadingView.hidden = true;
+		}
+		if (flashcardModalState.contentView) {
+			flashcardModalState.contentView.hidden = false;
+		}
+		renderFlashcardModalCard();
+	}, 1500);
+}
+
+function closeFlashcardModal() {
+	if (flashcardModalState.loadingTimeout) {
+		clearTimeout(flashcardModalState.loadingTimeout);
+		flashcardModalState.loadingTimeout = null;
+	}
+
+	if (flashcardModalState.overlay) {
+		flashcardModalState.overlay.classList.remove("active");
+		flashcardModalState.overlay.setAttribute("aria-hidden", "true");
+	}
+
+	document.body.classList.remove("flashcard-modal-open");
+	document.removeEventListener("keydown", handleFlashcardModalKeydown);
+}
+
+function renderFlashcardLauncherCard(flashcardData, responseLevel = null, metadata = {}, autoScroll = true) {
+	const normalizedFlashcard = normalizeFlashcardPayload(flashcardData);
+	if (!normalizedFlashcard) {
+		return null;
+	}
+
+	const wrapper = document.createElement("div");
+	wrapper.classList.add("message", "ai-message");
+
+	const avatar = document.createElement("div");
+	avatar.classList.add("message-avatar");
+	const logo = document.createElement("img");
+	logo.src = "assests/logo.png";
+	logo.alt = "Saivo";
+	logo.classList.add("bot-logo");
+	avatar.appendChild(logo);
+	wrapper.appendChild(avatar);
+
+	const card = document.createElement("div");
+	card.classList.add("flashcard-card", "flashcard-launcher-card");
+	const levelBadge = createResponseLevelBadge(responseLevel);
+	if (levelBadge) {
+		card.appendChild(levelBadge);
+	}
+
+	const header = document.createElement("div");
+	header.classList.add("flashcard-card-header");
+	const icon = document.createElement("div");
+	icon.classList.add("flashcard-card-icon");
+	icon.textContent = "📚";
+	header.appendChild(icon);
+
+	const headerText = document.createElement("div");
+	const title = document.createElement("div");
+	title.classList.add("flashcard-card-title");
+	title.textContent = "Flashcards Ready";
+	headerText.appendChild(title);
+	const topic = document.createElement("div");
+	topic.classList.add("flashcard-card-topic");
+	topic.textContent = normalizedFlashcard.topic;
+	headerText.appendChild(topic);
+	header.appendChild(headerText);
+	card.appendChild(header);
+
+	const launcherBody = document.createElement("div");
+	launcherBody.classList.add("flashcard-launcher-body");
+
+	const meta = document.createElement("div");
+	meta.classList.add("flashcard-launcher-meta");
+	meta.textContent = `${normalizedFlashcard.cards.length} cards available`;
+	launcherBody.appendChild(meta);
+
+	const openBtn = document.createElement("button");
+	openBtn.type = "button";
+	openBtn.classList.add("open-flashcard-btn");
+	openBtn.textContent = "Open Flashcards";
+	launcherBody.appendChild(openBtn);
+
+	card.appendChild(launcherBody);
+
+	card.__flashcardData = normalizedFlashcard;
+	card.dataset.flashcardPayload = JSON.stringify(normalizedFlashcard);
+	if (metadata && metadata.flashcardId) {
+		card.dataset.flashcardId = metadata.flashcardId;
+	}
+	if (metadata && Number.isInteger(metadata.messageIndex)) {
+		card.dataset.messageIndex = String(metadata.messageIndex);
+	}
+
+	openBtn.addEventListener("click", () => {
+		let storedFlashcards = card.__flashcardData || null;
+		if (!storedFlashcards && card.dataset.flashcardPayload) {
+			try {
+				storedFlashcards = normalizeFlashcardPayload(JSON.parse(card.dataset.flashcardPayload));
+			} catch (_error) {
+				storedFlashcards = null;
+			}
+		}
+
+		if (!storedFlashcards) {
+			return;
+		}
+
+		openFlashcardModal(storedFlashcards, {
+			flashcardId: card.dataset.flashcardId || "",
+		});
+	});
+
+	wrapper.appendChild(card);
+	messagesContainer.appendChild(wrapper);
+	if (autoScroll) {
+		chatArea.scrollTop = chatArea.scrollHeight;
+	}
+	return wrapper;
 }
 
 const quizModalState = {

@@ -34,10 +34,28 @@ def _normalize_chat_subject(raw_subject: Optional[str]) -> str:
 	return "Anyone"
 
 
-async def _chat_has_messages(db: AsyncIOMotorDatabase, chat_id: ObjectId) -> bool:
-	"""Return True if a chat has at least one message."""
-	message = await db["messages"].find_one({"chat_id": chat_id}, {"_id": 1})
-	return message is not None
+async def _chat_ids_with_messages(
+	db: AsyncIOMotorDatabase,
+	chat_ids: list[ObjectId],
+) -> set[ObjectId]:
+	"""Return chat IDs that have at least one message using a single aggregate query."""
+	if not chat_ids:
+		return set()
+
+	cursor = db["messages"].aggregate(
+		[
+			{"$match": {"chat_id": {"$in": chat_ids}}},
+			{"$group": {"_id": "$chat_id"}},
+		]
+	)
+
+	chat_ids_with_messages: set[ObjectId] = set()
+	async for document in cursor:
+		chat_id = document.get("_id")
+		if isinstance(chat_id, ObjectId):
+			chat_ids_with_messages.add(chat_id)
+
+	return chat_ids_with_messages
 
 
 def _resolve_title(raw_title: Optional[str]) -> str:
@@ -101,19 +119,30 @@ async def list_chats(
 		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
 	# SOFT DELETE: Filter out deleted chats (deleted_at must be null or not exist)
-	cursor = (
+	documents = await (
 		db["chats"]
-		.find({
-			"user_id": user_object_id,
-			"deleted_at": {"$eq": None}  # Only active (non-deleted) chats
-		})
+		.find(
+			{
+				"user_id": user_object_id,
+				"deleted_at": {"$eq": None},  # Only active (non-deleted) chats
+			},
+			{
+				"title": 1,
+				"created_at": 1,
+				"subject": 1,
+			},
+		)
 		.sort("created_at", -1)
+		.to_list(length=None)
 	)
 
+	chat_ids = [document["_id"] for document in documents if isinstance(document.get("_id"), ObjectId)]
+	chat_ids_with_messages = await _chat_ids_with_messages(db, chat_ids)
+
 	chats: list[ChatResponse] = []
-	async for document in cursor:
+	for document in documents:
 		subject = _normalize_chat_subject(document.get("subject"))
-		has_messages = await _chat_has_messages(db, document["_id"])
+		has_messages = document.get("_id") in chat_ids_with_messages
 		chats.append(
 			ChatResponse(
 				id=str(document["_id"]),

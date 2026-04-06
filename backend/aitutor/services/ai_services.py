@@ -162,7 +162,8 @@ def _subject_instruction(session_subject: str) -> str:
     return (
         f"Subject mode: {session_subject}. Keep answers strictly in {session_subject} context. "
         "If the user asks something outside this subject, respond with ONLY this exact sentence and nothing else: "
-        f'"{mismatch_message}"'
+        f'"{mismatch_message}" '
+        "Do not add any prefix/suffix, examples, bullets, explanation, or words like 'However'."
     )
 
 

@@ -232,7 +232,8 @@ def _build_subject_guard_snippet(session_subject: str) -> str:
         f"Current session subject: {session_subject}.\n"
         f"Answer only in the context of {session_subject}.\n"
         "If the user's question is unrelated, respond with ONLY this exact sentence and nothing else:\n"
-        f'"{mismatch_message}"'
+        f'"{mismatch_message}"\n'
+        "Do not add any prefix, suffix, examples, bullets, explanation, or words like 'However'."
     )
 
 
@@ -471,13 +472,20 @@ def _should_block_for_subject(user_message: str, session_subject: str) -> bool:
 
 
 def _build_subject_mismatch_response(session_subject: str) -> str:
-    base = _subject_mismatch_message(session_subject)
-    suggestions = SUBJECT_SUGGESTIONS.get(session_subject, ())
-    if not suggestions:
-        return base
+    return _subject_mismatch_message(session_subject)
 
-    suggestion_lines = "\n".join(f"- {suggestion}" for suggestion in suggestions)
-    return f"{base}\n\nYou can ask me things like:\n{suggestion_lines}"
+
+def _enforce_exact_subject_mismatch_reply(reply: str, session_subject: str) -> str:
+    if session_subject == "Anyone" or not isinstance(reply, str):
+        return reply
+
+    expected = _subject_mismatch_message(session_subject)
+    normalized_reply = re.sub(r"\s+", " ", reply).strip().lower()
+    normalized_expected = re.sub(r"\s+", " ", expected).strip().lower()
+    if normalized_expected in normalized_reply:
+        return expected
+
+    return reply
 
 
 def _build_prompt_for_api(
@@ -1053,6 +1061,8 @@ async def send_message(
             session_subject=session_subject,
         )
         used_ai = True
+
+    reply = _enforce_exact_subject_mismatch_reply(reply, session_subject)
 
     # --- DATA LOSS FIX: ALWAYS save full response IMMEDIATELY ---
     assistant_message = Message.create(

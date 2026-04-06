@@ -580,10 +580,175 @@ function parseMarkdownToHtml(markdownText) {
 	return "";
 }
 
-function renderMathInMessageBubble(targetElement) {
-	if (!targetElement || typeof renderMathInElement !== "function") {
+function countRegexMatches(sourceText, regexPattern) {
+	if (typeof sourceText !== "string" || !sourceText) {
+		return 0;
+	}
+
+	let count = 0;
+	let match = regexPattern.exec(sourceText);
+	while (match) {
+		count += 1;
+		match = regexPattern.exec(sourceText);
+	}
+	return count;
+}
+
+function countSingleDollarMathSegments(sourceText) {
+	if (typeof sourceText !== "string" || !sourceText) {
+		return 0;
+	}
+
+	let count = 0;
+	let index = 0;
+	while (index < sourceText.length) {
+		const start = sourceText.indexOf("$", index);
+		if (start === -1) {
+			break;
+		}
+
+		const prevChar = start > 0 ? sourceText[start - 1] : "";
+		const nextChar = start + 1 < sourceText.length ? sourceText[start + 1] : "";
+		if (prevChar === "\\" || nextChar === "$") {
+			index = start + 1;
+			continue;
+		}
+
+		let end = start + 1;
+		while (end < sourceText.length) {
+			if (
+				sourceText[end] === "$"
+				&& sourceText[end - 1] !== "\\"
+				&& sourceText[end + 1] !== "$"
+			) {
+				count += 1;
+				index = end + 1;
+				break;
+			}
+			end += 1;
+		}
+
+		if (end >= sourceText.length) {
+			break;
+		}
+	}
+
+	return count;
+}
+
+function extractCodeLanguageFromElement(codeElement) {
+	if (!codeElement) {
+		return "plaintext";
+	}
+
+	const languageMatch = String(codeElement.className || "").match(/language-([a-z0-9_+-]+)/i);
+	if (languageMatch && languageMatch[1]) {
+		return languageMatch[1];
+	}
+
+	return "plaintext";
+}
+
+function createCodeCopyIconButton(textToCopy) {
+	const copyBtn = document.createElement("button");
+	copyBtn.className = "copy-code-btn";
+	copyBtn.type = "button";
+	copyBtn.title = "Copy code";
+	copyBtn.setAttribute("aria-label", "Copy code");
+	copyBtn.innerHTML = COPY_ICON_SVG;
+
+	copyBtn.addEventListener("click", (event) => {
+		event.stopPropagation();
+		navigator.clipboard.writeText(textToCopy).then(() => {
+			copyBtn.innerHTML = CHECK_ICON_SVG;
+			copyBtn.classList.add("copied");
+
+			setTimeout(() => {
+				copyBtn.innerHTML = COPY_ICON_SVG;
+				copyBtn.classList.remove("copied");
+			}, 1500);
+		}).catch((error) => {
+			console.error("Failed to copy code block:", error);
+		});
+	});
+
+	return copyBtn;
+}
+
+function enhanceCodeBlocksWithCopy(targetElement) {
+	if (!targetElement) {
 		return;
 	}
+
+	const codeElements = Array.from(targetElement.querySelectorAll("pre > code"));
+	codeElements.forEach((codeElement) => {
+		const preElement = codeElement.parentElement;
+		if (!preElement) {
+			return;
+		}
+
+		if (preElement.closest(".code-block-container")) {
+			return;
+		}
+
+		const codeText = codeElement.textContent || "";
+		const language = extractCodeLanguageFromElement(codeElement);
+
+		const container = document.createElement("div");
+		container.className = "code-block-container";
+
+		const header = document.createElement("div");
+		header.className = "code-block-header";
+
+		const langLabel = document.createElement("span");
+		langLabel.className = "code-block-lang";
+		langLabel.textContent = language;
+
+		header.appendChild(langLabel);
+		header.appendChild(createCodeCopyIconButton(codeText));
+
+		const content = document.createElement("div");
+		content.className = "code-block-content";
+
+		const parentElement = preElement.parentElement;
+		if (!parentElement) {
+			return;
+		}
+
+		parentElement.insertBefore(container, preElement);
+		preElement.remove();
+		content.appendChild(preElement);
+
+		container.appendChild(header);
+		container.appendChild(content);
+	});
+}
+
+function renderMathInMessageBubble(targetElement, sourceText = "") {
+	if (!targetElement) {
+		return;
+	}
+
+	if (typeof renderMathInElement !== "function") {
+		console.warn("[KaTeX] renderMathInElement not available; skipping math render");
+		return;
+	}
+
+	const mathSource = typeof sourceText === "string" && sourceText
+		? sourceText
+		: (targetElement.textContent || "");
+
+	const inlineParenCount = countRegexMatches(mathSource, /\\\([\s\S]*?\\\)/g);
+	const displayBracketCount = countRegexMatches(mathSource, /\\\[[\s\S]*?\\\]/g);
+	const displayDollarCount = countRegexMatches(mathSource, /\$\$[\s\S]*?\$\$/g);
+	const inlineDollarCount = countSingleDollarMathSegments(mathSource);
+
+	console.log("[KaTeX] Render pass starting", {
+		inlineParenCount,
+		displayBracketCount,
+		displayDollarCount,
+		inlineDollarCount,
+	});
 
 	try {
 		renderMathInElement(targetElement, {
@@ -591,10 +756,16 @@ function renderMathInMessageBubble(targetElement) {
 				{ left: "\\(", right: "\\)", display: false },
 				{ left: "\\[", right: "\\]", display: true },
 				{ left: "$$", right: "$$", display: true },
+				{ left: "$", right: "$", display: false },
 			],
 			throwOnError: false,
 			strict: "ignore",
 			ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
+		});
+
+		const renderedMathNodeCount = targetElement.querySelectorAll(".katex").length;
+		console.log("[KaTeX] Render pass complete", {
+			renderedMathNodeCount,
 		});
 	} catch (error) {
 		console.error("KaTeX rendering failed:", error);
@@ -606,14 +777,17 @@ function renderAssistantRichContent(targetElement, rawText) {
 		return;
 	}
 
-	const markdownHtml = parseMarkdownToHtml(rawText);
+	const safeText = typeof rawText === "string" ? rawText : "";
+	const markdownHtml = parseMarkdownToHtml(safeText);
 	if (!markdownHtml) {
-		targetElement.textContent = typeof rawText === "string" ? rawText : "";
+		targetElement.textContent = safeText;
+		renderMathInMessageBubble(targetElement, safeText);
 		return;
 	}
 
 	targetElement.innerHTML = markdownHtml;
-	renderMathInMessageBubble(targetElement);
+	enhanceCodeBlocksWithCopy(targetElement);
+	renderMathInMessageBubble(targetElement, safeText);
 }
 
 // --- WELCOME SCREEN ---
@@ -1010,9 +1184,10 @@ function createMessageElement(message, animate = false) {
 	if (isAssistant) {
 		const richContent = document.createElement("div");
 		richContent.classList.add("assistant-rich-content");
-		renderAssistantRichContent(richContent, trimmed);
 		if (animate) {
-			richContent.classList.add("ai-text-reveal");
+			richContent.textContent = "";
+		} else {
+			renderAssistantRichContent(richContent, trimmed);
 		}
 		content.appendChild(richContent);
 	} else {
@@ -1047,19 +1222,7 @@ function createCodeBlock(language, code) {
 	langLabel.className = 'code-block-lang';
 	langLabel.textContent = language;
 
-	const copyBtn = document.createElement('button');
-	copyBtn.className = 'copy-code-btn';
-	copyBtn.innerHTML = '<span>Copy</span>';
-	copyBtn.onclick = () => {
-		navigator.clipboard.writeText(code).then(() => {
-			copyBtn.innerHTML = '<span>Copied!</span>';
-			copyBtn.classList.add('copied');
-			setTimeout(() => {
-				copyBtn.innerHTML = '<span>Copy</span>';
-				copyBtn.classList.remove('copied');
-			}, 2000);
-		});
-	};
+	const copyBtn = createCodeCopyIconButton(code);
 
 	header.appendChild(langLabel);
 	header.appendChild(copyBtn);
@@ -1078,8 +1241,10 @@ function createCodeBlock(language, code) {
 
 // Typewriter animation with formatting and stop support
 function addTypewriterAnimation(bubble, markdownText) {
+	const safeMarkdownText = typeof markdownText === "string" ? markdownText : "";
+
 	// Initialize render state
-	renderState.fullResponseText = markdownText;
+	renderState.fullResponseText = safeMarkdownText;
 	renderState.renderIndex = 0;
 	renderState.isRendering = true;
 	renderState.isStopped = false;
@@ -1088,7 +1253,7 @@ function addTypewriterAnimation(bubble, markdownText) {
 	// Show stop button when rendering starts
 	showStopButton();
 
-	const tokens = parseMarkdown(markdownText);
+	const tokens = parseMarkdown(safeMarkdownText);
 
 	// Convert tokens to words with formatting info
 	const words = [];
@@ -1168,6 +1333,12 @@ function addTypewriterAnimation(bubble, markdownText) {
 	function finishRendering() {
 		chatArea.removeEventListener('scroll', scrollHandler);
 		renderState.isRendering = false;
+		const completedNaturally = !renderState.isStopped;
+
+		if (completedNaturally) {
+			console.log("[Render] Typewriter complete. Applying markdown + KaTeX render pass.");
+			renderAssistantRichContent(bubble, renderState.fullResponseText);
+		}
 
 		// CHAT-SCOPED GENERATION: Reset generation state when rendering completes
 		isGenerating = false;
@@ -1177,7 +1348,7 @@ function addTypewriterAnimation(bubble, markdownText) {
 		autoScrollIfNeeded();
 
 		// If rendering completed naturally (not stopped), finalize with stopped=false
-		if (!renderState.isStopped) {
+		if (completedNaturally) {
 			finalizeResponse(false);
 		}
 		// If stopped, finalizeResponse was already called in stopRendering()
@@ -1857,22 +2028,24 @@ async function sendMessage(content) {
 					renderState.chatId = response.chat_id || state.activeChatId;
 					renderState.userId = response.user_id || state.userId;
 					renderState.messageId = response.message_id;
-					isGenerating = false;
-					generatingChatId = null;
-					hideStopButton();
 
 					const aiMessage = {
 						role: "assistant",
 						content: response.content,
 						response_level: responseLevel,
 					};
-					appendMessage(aiMessage, false);
+					const aiElement = appendMessage(aiMessage, true);
+					const richContentContainer = aiElement
+						? aiElement.querySelector(".assistant-rich-content")
+						: null;
 
-					const isAtBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 100;
-					if (isAtBottom) {
-						setTimeout(() => {
-							chatArea.scrollTop = chatArea.scrollHeight;
-						}, 100);
+					if (richContentContainer) {
+						addTypewriterAnimation(richContentContainer, response.content);
+					} else {
+						console.warn("Typewriter target not found. Falling back to static render.");
+						isGenerating = false;
+						generatingChatId = null;
+						hideStopButton();
 					}
 				}
 			}, 500);

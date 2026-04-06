@@ -92,38 +92,6 @@ export default function StyleIsland() {
         {isOpen && (
           <div className="origin-top-right absolute right-0 top-full mt-4 w-64 rounded-3xl shadow-[0_20px_40px_rgb(0,0,0,0.4)] bg-slate-900/90 backdrop-blur-xl ring-1 ring-white/10 overflow-hidden animate-[fadeInDown_0.2s_ease-out] p-5">
             
-            {/* Tools Section */}
-            <div className="mb-4">
-              <div className="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Tools</div>
-              <div className="grid grid-cols-3 gap-2 bg-slate-800/50 p-1.5 rounded-2xl border border-white/5">
-                {[
-                  { id: 'select', label: 'Select', icon: 'M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122' },
-                  { id: 'draw', label: 'Pen', icon: 'M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z' },
-                  { id: 'eraser', label: 'Eraser', icon: 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16' },
-                  { id: 'geo', geo: 'rectangle', label: 'Square', icon: 'M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6z' },
-                  { id: 'geo', geo: 'ellipse', label: 'Circle', icon: 'M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
-                  { id: 'text', label: 'Text', icon: 'M4 6h16M4 12h16M4 18h7' },
-                ].map((tool, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => {
-                      handleToolChange(tool.id, tool.geo);
-                      setIsOpen(false);
-                    }}
-                    className="flex flex-col items-center justify-center p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700/50 transition-all focus:outline-none group"
-                    title={tool.label}
-                  >
-                    <svg className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={tool.icon} />
-                    </svg>
-                    <span className="text-[10px]">{tool.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="h-[1px] bg-white/10 my-4"></div>
-
             {/* Colors Section */}
             <div className="mb-5">
               <div className="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Colors</div>

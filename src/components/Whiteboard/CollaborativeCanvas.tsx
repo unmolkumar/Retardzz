@@ -9,6 +9,7 @@ import Sidebar from "./Sidebar";
 import HeaderActions from "./HeaderActions";
 import StyleIsland from "./StyleIsland";
 import TopLeftControls from "./TopLeftControls";
+import BottomToolbar from "./BottomToolbar";
 import { EditorContext } from "./EditorContext";
 import { Editor as TLEditor } from "@tldraw/tldraw";
 
@@ -27,6 +28,7 @@ export default function CollaborativeCanvas({ roomId }: CollaborativeCanvasProps
             <HeaderActions />
             <StyleIsland />
             <TopLeftControls />
+            <BottomToolbar />
             <Sidebar />
             <Cursors />
             <EditorComponent />

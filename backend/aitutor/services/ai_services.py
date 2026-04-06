@@ -175,6 +175,88 @@ def _build_runtime_instructions(difficulty_level: str, session_subject: str) -> 
     )
 
 
+SUBJECT_RESTRICTION_REGEXES = (
+    re.compile(r"\[session subject mode\]", re.IGNORECASE),
+    re.compile(r"\bcurrent session subject\b", re.IGNORECASE),
+    re.compile(r"\bsubject mode:\b", re.IGNORECASE),
+    re.compile(r"this question is not related to the current session subject", re.IGNORECASE),
+    re.compile(r"please ask a .*?-related question or switch subject to anyone", re.IGNORECASE),
+    re.compile(r"\b(?:this|we)\s+(?:is|are)\s+(?:an?\s+)?(?:maths|physics|chemistry|coding)\s+session\b", re.IGNORECASE),
+)
+
+
+def _looks_like_subject_restriction_text(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+
+    stripped = value.strip()
+    if not stripped:
+        return False
+
+    return any(pattern.search(stripped) for pattern in SUBJECT_RESTRICTION_REGEXES)
+
+
+def _strip_subject_restriction_lines(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    kept_lines: list[str] = []
+    for line in value.splitlines():
+        if _looks_like_subject_restriction_text(line):
+            continue
+        kept_lines.append(line)
+
+    return "\n".join(kept_lines).strip()
+
+
+def _sanitize_context_for_subject(context: Sequence[str]) -> list[str]:
+    sanitized_context: list[str] = []
+    for entry in context:
+        if not isinstance(entry, str):
+            continue
+
+        candidate = entry.strip()
+        if not candidate:
+            continue
+
+        if ":" not in candidate:
+            cleaned_candidate = _strip_subject_restriction_lines(candidate)
+            if cleaned_candidate:
+                sanitized_context.append(cleaned_candidate)
+            continue
+
+        role, body = candidate.split(":", 1)
+        cleaned_body = _strip_subject_restriction_lines(body)
+        if not cleaned_body:
+            continue
+
+        sanitized_context.append(f"{role.strip()}: {cleaned_body}")
+
+    return sanitized_context
+
+
+def _subject_override_system_instruction(session_subject: str) -> str:
+    normalized_subject = _normalize_session_subject(session_subject)
+    if normalized_subject == "Anyone":
+        return (
+            "CURRENT SUBJECT OVERRIDE (MOST RECENT SYSTEM INSTRUCTION): "
+            "The active subject selected by the user right now is Anyone. "
+            "Do not enforce any previous subject restrictions from chat history. "
+            "Ignore all earlier messages that claim a fixed subject session."
+        )
+
+    mismatch_message = _subject_mismatch_message(normalized_subject)
+    return (
+        "CURRENT SUBJECT OVERRIDE (MOST RECENT SYSTEM INSTRUCTION): "
+        f"The active subject selected by the user right now is {normalized_subject}. "
+        "This overrides every earlier subject statement in chat history. "
+        "Do not infer the active subject from previous messages. "
+        "Ignore old subject/session instructions if they conflict with this one. "
+        "If the current user request is outside this active subject, respond with exactly: "
+        f'"{mismatch_message}"'
+    )
+
+
 def _sanitize_json_text(raw_text: str) -> str:
     text = raw_text.strip()
 
@@ -207,7 +289,8 @@ def _normalize_option_label(option_label: str) -> str:
 
 
 def _infer_topic_from_context(context: Sequence[str]) -> str:
-    for entry in reversed(context):
+    sanitized_context = _sanitize_context_for_subject(context)
+    for entry in reversed(sanitized_context):
         if not isinstance(entry, str):
             continue
         lowered = entry.lower().strip()
@@ -702,7 +785,8 @@ def _normalize_summary_payload(payload: dict[str, Any] | None, topic: str) -> di
 
 def _build_user_content(context: Sequence[str], latest_message: str) -> str:
     """Combine context messages with the latest user message into one prompt."""
-    parts = [item.strip() for item in context if isinstance(item, str) and item.strip()]
+    sanitized_context = _sanitize_context_for_subject(context)
+    parts = [item.strip() for item in sanitized_context if isinstance(item, str) and item.strip()]
     parts.append(latest_message.strip())
     return "\n".join(part for part in parts if part)
 
@@ -756,6 +840,24 @@ async def _call_groq(messages: list[dict[str, str]], temperature: float = 0.7) -
         return None
 
 
+async def _call_groq_with_subject_override(
+    *,
+    base_system_prompt: str,
+    user_prompt: str,
+    session_subject: str,
+    temperature: float,
+) -> str | None:
+    subject_override = _subject_override_system_instruction(session_subject)
+    return await _call_groq(
+        messages=[
+            {"role": "system", "content": base_system_prompt},
+            {"role": "system", "content": subject_override},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=temperature,
+    )
+
+
 async def generate_ai_reply(message: str, context: Sequence[str]) -> str:
     """Call Groq to produce an assistant reply."""
     return await generate_ai_reply_with_mode(
@@ -778,11 +880,10 @@ async def generate_ai_reply_with_mode(
     runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
     user_content = _build_user_content(context, message)
     full_system_prompt = f"{SYSTEM_PROMPT}\n\n{runtime_instructions}"
-    reply = await _call_groq(
-        messages=[
-            {"role": "system", "content": full_system_prompt},
-            {"role": "user", "content": user_content},
-        ],
+    reply = await _call_groq_with_subject_override(
+        base_system_prompt=full_system_prompt,
+        user_prompt=user_content,
+        session_subject=normalized_subject,
         temperature=0.7,
     )
     return reply or FALLBACK_RESPONSE
@@ -830,11 +931,10 @@ async def generate_quiz_payload(
         "Generate the quiz now."
     )
 
-    raw_reply = await _call_groq(
-        messages=[
-            {"role": "system", "content": quiz_system_prompt},
-            {"role": "user", "content": quiz_user_prompt},
-        ],
+    raw_reply = await _call_groq_with_subject_override(
+        base_system_prompt=quiz_system_prompt,
+        user_prompt=quiz_user_prompt,
+        session_subject=normalized_subject,
         temperature=0.5,
     )
 
@@ -910,11 +1010,10 @@ async def generate_flashcard_payload(
         "Generate the flashcards now."
     )
 
-    raw_reply = await _call_groq(
-        messages=[
-            {"role": "system", "content": flashcard_system_prompt},
-            {"role": "user", "content": flashcard_user_prompt},
-        ],
+    raw_reply = await _call_groq_with_subject_override(
+        base_system_prompt=flashcard_system_prompt,
+        user_prompt=flashcard_user_prompt,
+        session_subject=normalized_subject,
         temperature=0.5,
     )
 
@@ -1019,11 +1118,10 @@ async def generate_mindmap_payload(
 
     prompts = [mindmap_user_prompt, retry_user_prompt]
     for prompt_index, user_prompt in enumerate(prompts):
-        raw_reply = await _call_groq(
-            messages=[
-                {"role": "system", "content": mindmap_system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+        raw_reply = await _call_groq_with_subject_override(
+            base_system_prompt=mindmap_system_prompt,
+            user_prompt=user_prompt,
+            session_subject=normalized_subject,
             temperature=0.4,
         )
 
@@ -1097,11 +1195,10 @@ async def generate_summary_payload(
         "Generate the summary now."
     )
 
-    raw_reply = await _call_groq(
-        messages=[
-            {"role": "system", "content": summary_system_prompt},
-            {"role": "user", "content": summary_user_prompt},
-        ],
+    raw_reply = await _call_groq_with_subject_override(
+        base_system_prompt=summary_system_prompt,
+        user_prompt=summary_user_prompt,
+        session_subject=normalized_subject,
         temperature=0.4,
     )
 
@@ -1149,11 +1246,10 @@ async def generate_quiz_feedback_reply(
         f"Reference explanation: {explanation}\n"
     )
 
-    reply = await _call_groq(
-        messages=[
-            {"role": "system", "content": feedback_system_prompt},
-            {"role": "user", "content": feedback_user_prompt},
-        ],
+    reply = await _call_groq_with_subject_override(
+        base_system_prompt=feedback_system_prompt,
+        user_prompt=feedback_user_prompt,
+        session_subject=normalized_subject,
         temperature=0.5,
     )
 

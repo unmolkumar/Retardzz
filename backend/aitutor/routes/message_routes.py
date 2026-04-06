@@ -488,6 +488,25 @@ def _enforce_exact_subject_mismatch_reply(reply: str, session_subject: str) -> s
     return reply
 
 
+def _strip_subject_guard_from_prompt(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    cleaned = re.sub(
+        r"\[SESSION SUBJECT MODE\][\s\S]*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+    cleaned = re.sub(
+        r"This question is not related to the current session subject \([^\)]*\)\.\s*Please ask a [^\n]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned
+
+
 def _build_prompt_for_api(
     content: str,
     api_prompt: Optional[str],
@@ -496,17 +515,21 @@ def _build_prompt_for_api(
 ) -> str:
     """Build the exact prompt text sent to AI calls."""
     if api_prompt and api_prompt.strip():
-        base_prompt = api_prompt.strip()
+        candidate_prompt = _strip_subject_guard_from_prompt(api_prompt.strip())
+        if candidate_prompt:
+            base_prompt = candidate_prompt
+        else:
+            base_content = content.strip() or content
+            if difficulty_level == "Neutral":
+                base_prompt = base_content
+            else:
+                base_prompt = f"{base_content} at {difficulty_level.lower()} level"
     else:
         base_content = content.strip() or content
         if difficulty_level == "Neutral":
             base_prompt = base_content
         else:
             base_prompt = f"{base_content} at {difficulty_level.lower()} level"
-
-    subject_guard = _build_subject_guard_snippet(session_subject)
-    if subject_guard and "[SESSION SUBJECT MODE]" not in base_prompt:
-        return f"{base_prompt}\n\n{subject_guard}"
 
     return base_prompt
 

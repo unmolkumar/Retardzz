@@ -75,9 +75,9 @@
 				</svg>
 			</button>
 			<span class="brand-title">Saivo Rooms</span>
-			
+
 			<div class="header-chat-title" id="room-header-title"></div>
-			
+
 			<button class="info-btn" id="room-info-btn" style="display: none;" title="Room Info / Invite">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<circle cx="12" cy="12" r="10"></circle>
@@ -88,7 +88,7 @@
 		</header>
 
 		<div class="chat-area" id="chatArea">
-            
+
             <!-- HUB VIEW -->
 			<div class="room-view" id="view-hub">
 				<div class="welcome-logo">
@@ -104,9 +104,10 @@
 
             <!-- CREATE VIEW -->
             <div class="room-view" id="view-create" style="display: none;">
-                <h2>Create a New Room</h2>
+                <h2 style="margin-bottom: 5px;">Create a New Room</h2>
                 <div class="room-form">
                     <input type="text" class="room-input" id="create-room-name" placeholder="Name your study room...">
+                    <textarea class="room-input" id="create-room-desc" placeholder="Room Description (Optional)..." rows="3" style="resize: none;"></textarea>
                     <button class="primary-btn" id="submit-create-btn">Create & Enter Room</button>
                     <button class="secondary-btn" id="cancel-create-btn">Back to Hub</button>
                 </div>

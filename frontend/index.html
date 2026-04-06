@@ -118,7 +118,7 @@
 				</label>
 			</div>
 		</div>
-			
+
 			<!-- Mobile Chat Title (expandable, visible only on mobile) -->
 			<div class="mobile-chat-title-wrapper" id="mobile-chat-title-wrapper">
 				<button class="mobile-chat-title-btn" id="mobile-chat-title-btn" aria-expanded="false" title="Expand chat title">
@@ -129,9 +129,9 @@
 				</button>
 				<div class="mobile-chat-title-full" id="mobile-chat-title-full"></div>
 			</div>
-			
+
 			<div class="header-chat-title" id="chat-title"></div>
-			
+
 			<!-- Info/Help Button (top-right) -->
 			<button class="info-btn" id="info-btn" aria-label="Help and Account Info" title="Help & Account">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -140,7 +140,7 @@
 					<line x1="12" y1="17" x2="12.01" y2="17"></line>
 				</svg>
 			</button>
-			
+
 			<!-- Mobile Profile Button (visible only on mobile) -->
 			<div class="mobile-profile-wrapper" id="mobile-profile-wrapper">
 				<button class="mobile-profile-btn" id="mobile-profile-btn" aria-label="Profile menu">
@@ -237,7 +237,7 @@
 					<line x1="6" y1="6" x2="18" y2="18"></line>
 				</svg>
 			</button>
-			
+
 			<!-- Tab Navigation -->
 			<div class="info-tabs">
 				<button type="button" class="info-tab active" id="tab-help" data-tab="help">
@@ -256,7 +256,7 @@
 					<span>Account</span>
 				</button>
 			</div>
-			
+
 			<!-- Tab Content -->
 			<div class="info-tab-content">
 				<!-- Help Tab (default) -->
@@ -270,7 +270,7 @@
 							</svg>
 						</button>
 					</div>
-					
+
 					<!-- Help Form (default view) -->
 					<form id="help-form" class="help-form">
 						<div class="help-form-group">
@@ -285,7 +285,7 @@
 							</svg>
 						</button>
 					</form>
-					
+
 					<!-- History Panel (hidden by default) -->
 					<div id="help-history" class="help-history">
 						<div class="help-history-header">
@@ -296,7 +296,7 @@
 							<div class="help-history-empty">Loading...</div>
 						</div>
 					</div>
-					
+
 					<!-- Success message (hidden by default) -->
 					<div id="help-success" class="help-success" style="display: none;">
 						<div class="help-success-icon">
@@ -309,13 +309,13 @@
 						<button type="button" class="help-another-btn" id="help-another-btn">Submit Another</button>
 					</div>
 				</div>
-				
+
 				<!-- Account Tab -->
 				<div class="info-tab-panel" id="panel-account">
 					<div class="info-panel-header">
 						<h2 class="info-panel-title">Account</h2>
 					</div>
-					
+
 					<div class="account-info">
 						<div class="account-avatar" id="info-avatar">U</div>
 						<div class="account-details">
@@ -333,7 +333,7 @@
 							</div>
 						</div>
 					</div>
-					
+
 					<div class="account-actions">
 						<button type="button" class="delete-account-btn" id="delete-account-btn">
 							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -349,7 +349,7 @@
 			</div>
 		</div>
 	</div>
-	
+
 	<!-- ========================
 		 DELETION RATE LIMIT MODAL
 		 ========================
@@ -370,7 +370,7 @@
 			<button type="button" class="deletion-ratelimit-ok" id="deletion-ratelimit-ok">OK</button>
 		</div>
 	</div>
-	
+
 	<!-- ========================
 		 DELETE ACCOUNT CONFIRMATION MODAL
 		 ========================
@@ -385,7 +385,7 @@
 					<line x1="6" y1="6" x2="18" y2="18"></line>
 				</svg>
 			</button>
-			
+
 			<div class="delete-modal-header">
 				<div class="delete-modal-icon">
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -396,11 +396,11 @@
 				</div>
 				<h2 class="delete-modal-title">Delete Account</h2>
 			</div>
-			
+
 			<p class="delete-modal-warning">
 				This action will schedule your account for deletion. You have 30 days to log back in to cancel.
 			</p>
-			
+
 			<form id="delete-form" class="delete-form">
 				<div class="delete-form-group">
 					<label for="delete-username">Username</label>
@@ -414,15 +414,15 @@
 					<label for="delete-keyword">Type <strong>delete</strong> to confirm</label>
 					<input type="text" id="delete-keyword" name="keyword" placeholder="delete" required>
 				</div>
-				
+
 				<div class="delete-error" id="delete-error"></div>
-				
+
 				<div class="delete-form-actions">
 					<button type="button" class="delete-cancel-btn" id="delete-cancel-btn">Cancel</button>
 					<button type="submit" class="delete-confirm-btn" id="delete-confirm-btn">Confirm Deletion</button>
 				</div>
 			</form>
-			
+
 			<!-- Success message with countdown (hidden by default) -->
 			<div id="delete-success" class="delete-success" style="display: none;">
 				<div class="delete-success-icon">
@@ -449,7 +449,7 @@
 	</div>
 
 	<!-- File Upload Unavailable Modal -->
-	<!-- 
+	<!--
 		WHY FILE UPLOAD IS DISABLED:
 		File upload feature is temporarily disabled due to high server demand.
 		This modal provides a user-friendly message instead of silently failing

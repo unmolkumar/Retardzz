@@ -21,7 +21,7 @@ def get_current_user(x_username: str = Header(...)) -> str:
 @router.post("/create", response_model=RoomResponse)
 async def api_create_room(req: RoomCreateRequest, x_username: str = Depends(get_current_user)):
 	"""Creates a new study room and assigns the requester as Admin."""
-	result = await create_room(req.name, admin_username=x_username)
+	result = await create_room(req.name, description=req.description, admin_username=x_username)
 	return result
 
 @router.post("/join", response_model=RoomResponse)
@@ -34,8 +34,8 @@ async def api_join_room(req: RoomJoinRequest, x_username: str = Depends(get_curr
 async def api_invite_user(room_id: str, req: RoomInviteRequest, x_username: str = Depends(get_current_user)):
 	"""Invites a user into a study room."""
 	result = await invite_user_by_username(
-		room_id=room_id, 
-		inviter_username=x_username, 
+		room_id=room_id,
+		inviter_username=x_username,
 		target_username=req.target_username
 	)
 	return result

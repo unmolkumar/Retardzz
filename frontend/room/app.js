@@ -49,7 +49,7 @@ document.getElementById('hub-btn').onclick = () => {
     document.getElementById('room-header-title').textContent = '';
     document.getElementById('room-info-btn').style.display = 'none';
     if(refreshInterval) clearInterval(refreshInterval);
-    fetchMyRooms(); 
+    fetchMyRooms();
 };
 document.getElementById('nav-create-btn').onclick = () => showView('create');
 document.getElementById('nav-join-btn').onclick = () => showView('join');
@@ -92,13 +92,15 @@ function renderRoomList(rooms) {
 
 document.getElementById('submit-create-btn').onclick = async () => {
     const name = document.getElementById('create-room-name').value.trim();
+    const description = document.getElementById('create-room-desc').value.trim();
     if(!name) return;
     const res = await fetch(`${API_BASE}/create`, {
-        method: 'POST', headers: getHeaders(), body: JSON.stringify({ name })
+        method: 'POST', headers: getHeaders(), body: JSON.stringify({ name, description })
     });
     if(res.ok){
         const room = await res.json();
         document.getElementById('create-room-name').value = '';
+        document.getElementById('create-room-desc').value = '';
         fetchMyRooms();
         selectRoom(room);
     }
@@ -132,7 +134,7 @@ document.getElementById('submit-invite-btn').onclick = async () => {
 async function selectRoom(room) {
     activeRoom = room.id;
     currentInviteCode = room.invite_code;
-    
+
     document.getElementById('room-header-title').textContent = room.name;
     document.getElementById('room-info-btn').style.display = 'block';
     document.getElementById('send-msg-btn').disabled = false;
@@ -140,7 +142,7 @@ async function selectRoom(room) {
     showView('chat');
     fetchMyRooms(); // refresh active highlight
     loadMessages();
-    
+
     if(refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(loadMessages, 3000);
 }
@@ -162,7 +164,7 @@ function renderMessages(messages) {
         box.innerHTML = `<p style="text-align: center; color: var(--text-secondary);">Room is empty. Be the first to say hi!</p>`;
         return;
     }
-    
+
     box.innerHTML = '';
     let html = '';
     messages.forEach(m => {
@@ -185,7 +187,7 @@ document.getElementById('send-msg-btn').onclick = async () => {
     const input = document.getElementById('chat-input');
     const txt = input.value.trim();
     if(!txt || !activeRoom) return;
-    
+
     input.value = '';
     await fetch(`${API_BASE}/${activeRoom}/messages`, {
         method: 'POST',

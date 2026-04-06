@@ -13,7 +13,7 @@ class MessageResponse(BaseModel):
 	sender_username: str
 	content: str
 	sent_at: datetime
-	
+
 	model_config = ConfigDict(from_attributes=True)
 
 class MessageListResponse(BaseModel):
@@ -25,7 +25,7 @@ class MemberResponse(BaseModel):
 	username: str
 	role: MemberRole
 	joined_at: datetime
-	
+
 	model_config = ConfigDict(from_attributes=True)
 
 class MemberListResponse(BaseModel):

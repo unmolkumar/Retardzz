@@ -139,7 +139,9 @@ export function useYjsStore({
 }: {
   room: ReturnType<typeof useRoom>;
 }) {
-  const [store, setStore] = useState<TLStore | null>(null);
+  const [store] = useState<TLStore>(() => createTLStore({
+    shapeUtils: defaultShapeUtils,
+  }));
 
   useEffect(() => {
     if (!room) return;
@@ -150,11 +152,6 @@ export function useYjsStore({
     // Bind Y.Doc to Liveblocks room
     const provider = new LiveblocksYjsProvider(room, yDoc);
     
-    // Use the built-in default shapes to avoid migration ID conflicts
-    const newStore = createTLStore({ 
-      shapeUtils: defaultShapeUtils 
-    });
-    
     const yShapes = yDoc.getMap<TLRecord>("shapes");
 
     // Hydration: Prepopulate store with existing Y.Doc data
@@ -163,11 +160,11 @@ export function useYjsStore({
       initialRecords.push(record);
     });
     if (initialRecords.length > 0) {
-      newStore.put(initialRecords);
+      store.put(initialRecords);
     }
     
     // Store Listener: Push local changes to the Yjs map
-    const unlisten = newStore.listen(
+    const unlisten = store.listen(
       (update) => {
         if (update.source !== "user") return;
         
@@ -203,16 +200,14 @@ export function useYjsStore({
       });
 
       if (toPut.length > 0 || toRemove.length > 0) {
-        newStore.mergeRemoteChanges(() => {
-          if (toPut.length > 0) newStore.put(toPut);
-          if (toRemove.length > 0) newStore.remove(toRemove);
+        store.mergeRemoteChanges(() => {
+          if (toPut.length > 0) store.put(toPut);
+          if (toRemove.length > 0) store.remove(toRemove);
         });
       }
     };
-    
-    yShapes.observe(observer);
 
-    setStore(newStore);
+    yShapes.observe(observer);
 
     // Cleanup function destroys ydoc and provider
     return () => {
@@ -221,7 +216,7 @@ export function useYjsStore({
       provider.destroy();
       yDoc.destroy();
     };
-  }, [room]);
+  }, [room, store]);
 
   return store;
 }
@@ -277,14 +272,6 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
       document.removeEventListener("mousedown", handleOutsideClick);
     };
   }, []);
-
-  if (!store) {
-    return (
-      <div className="wb-loading-screen">
-        Loading canvas...
-      </div>
-    );
-  }
 
   const collaborators = others.map(({ connectionId, presence }) => {
     const collaboratorName = presence.username || `User ${connectionId}`;

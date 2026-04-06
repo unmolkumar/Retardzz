@@ -370,7 +370,10 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
 
   async function copyRoomLink() {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      const roomLink = new URL(window.location.href);
+      // Avoid sharing user identity; each member should appear with their own username.
+      roomLink.searchParams.delete("username");
+      await navigator.clipboard.writeText(roomLink.toString());
       setStatusText("Room link copied.");
     } catch {
       setStatusText("Unable to copy link.");

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { RoomProvider } from "../../liveblocks.config";
 import { ClientSideSuspense } from "@liveblocks/react";
 import Editor from "./Editor";
@@ -34,7 +35,11 @@ function pickColor(seed: string): string {
 
 export default function CollaborativeCanvas({ roomId, username = "", roomName = "" }: CollaborativeCanvasProps) {
   const trimmedUsername = username.trim();
-  const resolvedUsername = trimmedUsername || `guest-${roomId.slice(0, 4)}`;
+  const guestFallback = useMemo(
+    () => `guest-${Math.random().toString(36).slice(2, 6)}`,
+    []
+  );
+  const resolvedUsername = trimmedUsername || guestFallback;
   const presenceColor = pickColor(resolvedUsername || roomId);
 
   return (

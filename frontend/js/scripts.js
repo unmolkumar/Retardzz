@@ -285,6 +285,24 @@ document.addEventListener("click", (e) => {
 // This prevents Stop button from affecting a different chat
 let generatingChatId = null;  // The chat_id currently generating a response
 let isGenerating = false;     // Whether AI response generation is in progress
+const SUBJECT_SWITCH_COOLDOWN_MS = 5000;
+let subjectSwitchCooldownUntil = 0;
+
+function syncSelectionControlsLock() {
+	const lockControls = isGenerating;
+
+	if (subjectSelect) {
+		subjectSelect.disabled = lockControls;
+	}
+
+	if (difficultyPickerBtn) {
+		difficultyPickerBtn.disabled = lockControls;
+	}
+
+	if (lockControls) {
+		closeDifficultyPopup();
+	}
+}
 
 // --- PROGRESSIVE RENDERING STATE ---
 let renderState = {
@@ -307,12 +325,14 @@ function showStopButton() {
 		sendBtn.style.display = "none";
 		stopBtn.style.display = "flex";
 	}
+	syncSelectionControlsLock();
 }
 
 // Hide stop button, show send button
 function hideStopButton() {
 	stopBtn.style.display = "none";
 	sendBtn.style.display = "flex";
+	syncSelectionControlsLock();
 }
 
 // Update stop button visibility based on current state
@@ -1824,6 +1844,7 @@ async function sendMessage(content) {
 	// CHAT-SCOPED GENERATION: Track which chat is generating
 	generatingChatId = state.activeChatId;
 	isGenerating = true;
+	syncSelectionControlsLock();
 
 	const userMessage = { role: "user", content: trimmedContent };
 	appendMessage(userMessage, false);
@@ -5258,6 +5279,11 @@ function setSessionSubject(subject) {
 
 if (difficultyPickerBtn) {
 	difficultyPickerBtn.addEventListener("click", (event) => {
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing level.");
+			return;
+		}
+
 		event.stopPropagation();
 		toggleDifficultyPopup();
 	});
@@ -5265,6 +5291,11 @@ if (difficultyPickerBtn) {
 
 difficultyOptions.forEach(option => {
 	option.addEventListener("click", (event) => {
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing level.");
+			return;
+		}
+
 		event.stopPropagation();
 		setDifficultyLevel(option.dataset.level);
 		closeDifficultyPopup();
@@ -5290,7 +5321,30 @@ if (state.difficultyLevel) {
 
 if (subjectSelect) {
 	subjectSelect.addEventListener("change", () => {
-		setSessionSubject(subjectSelect.value);
+		const currentSubject = normalizeSessionSubject(state.sessionSubject);
+		const nextSubject = normalizeSessionSubject(subjectSelect.value);
+
+		if (isGenerating) {
+			subjectSelect.value = currentSubject;
+			showToast("Please wait for the current response to finish before changing subject.");
+			return;
+		}
+
+		if (nextSubject === currentSubject) {
+			subjectSelect.value = currentSubject;
+			return;
+		}
+
+		const now = Date.now();
+		if (now < subjectSwitchCooldownUntil) {
+			const secondsLeft = Math.ceil((subjectSwitchCooldownUntil - now) / 1000);
+			subjectSelect.value = currentSubject;
+			showToast(`Please wait ${secondsLeft}s before changing subject again.`);
+			return;
+		}
+
+		setSessionSubject(nextSubject);
+		subjectSwitchCooldownUntil = Date.now() + SUBJECT_SWITCH_COOLDOWN_MS;
 	});
 }
 

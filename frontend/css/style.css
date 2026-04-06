@@ -1330,6 +1330,11 @@ body {
 	box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2);
 }
 
+.subject-select:disabled {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
 [data-theme="dark"] .subject-select {
 	background: rgba(255, 255, 255, 0.04);
 }
@@ -1375,6 +1380,15 @@ body {
 
 .difficulty-picker-btn:hover {
 	background: var(--hover);
+}
+
+.difficulty-picker-btn:disabled {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+.difficulty-picker-btn:disabled:hover {
+	background: var(--bg-body);
 }
 
 .difficulty-picker.open .difficulty-picker-btn {

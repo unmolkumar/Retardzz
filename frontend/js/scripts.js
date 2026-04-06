@@ -759,6 +759,14 @@ function renderMath(element) {
 	});
 }
 
+function hasMathMarkup(text) {
+	if (typeof text !== "string" || !text) {
+		return false;
+	}
+
+	return /(\$\$|\\\(|\\\[|\$[^$\n]+\$)/.test(text);
+}
+
 function renderAssistantRichContent(targetElement, rawText) {
 	if (!targetElement) {
 		return;
@@ -1158,6 +1166,9 @@ function createMessageElement(message, animate = false) {
 	content.classList.add("message-content");
 	const trimmed = (message.content ?? "").trim();
 	const responseLevel = isAssistant ? (message.response_level || message.responseLevel || null) : null;
+	if (isAssistant) {
+		content.dataset.mathCandidate = hasMathMarkup(trimmed) ? "1" : "0";
+	}
 
 	if (isAssistant) {
 		const levelBadge = createResponseLevelBadge(responseLevel);
@@ -1480,7 +1491,7 @@ function addTypewriterAnimation(bubble, markdownText) {
 	typeNextWord();
 }
 
-function appendMessage(message, animate = false) {
+function appendMessage(message, animate = false, renderAssistantMath = true) {
 	if (!message || typeof message.content !== "string") {
 		console.error("Invalid message:", message);
 		return null;
@@ -1490,9 +1501,9 @@ function appendMessage(message, animate = false) {
 	const element = createMessageElement(message, animate);
 	messagesContainer.appendChild(element);
 
-	if (message.role === "assistant" && !animate) {
+	if (message.role === "assistant" && !animate && renderAssistantMath) {
 		const bubble = element.querySelector(".message-content");
-		if (bubble) {
+		if (bubble && bubble.dataset.mathCandidate === "1") {
 			renderMath(bubble);
 		}
 	}
@@ -1918,13 +1929,16 @@ async function loadMessages() {
 		return;
 	}
 
+	const activeChatId = state.activeChatId;
+	const quizzesPromise = apiFetch(`/quizzes/chat/${activeChatId}`).catch(() => ({ quizzes: [] }));
+	const flashcardsPromise = apiFetch(`/flashcards/chat/${activeChatId}`).catch(() => ({ flashcards: [] }));
+	const mindmapsPromise = apiFetch(`/mindmaps/chat/${activeChatId}`).catch(() => ({ mindmaps: [] }));
+
 	try {
-		const [messagesPayload, quizzesPayload, flashcardsPayload, mindmapsPayload] = await Promise.all([
-			apiFetch(`/messages/${state.activeChatId}`),
-			apiFetch(`/quizzes/chat/${state.activeChatId}`).catch(() => ({ quizzes: [] })),
-			apiFetch(`/flashcards/chat/${state.activeChatId}`).catch(() => ({ flashcards: [] })),
-			apiFetch(`/mindmaps/chat/${state.activeChatId}`).catch(() => ({ mindmaps: [] })),
-		]);
+		const messagesPayload = await apiFetch(`/messages/${activeChatId}`);
+		if (state.activeChatId !== activeChatId) {
+			return;
+		}
 
 		const allMessages = Array.isArray(messagesPayload) ? [...messagesPayload] : [];
 		allMessages.sort((a, b) => {
@@ -1933,9 +1947,39 @@ async function loadMessages() {
 			return idxA - idxB;
 		});
 
-		const activeMeta = getChatMeta(state.activeChatId);
-		setChatMeta(state.activeChatId, activeMeta.subject, allMessages.length > 0);
+		const activeMeta = getChatMeta(activeChatId);
+		setChatMeta(activeChatId, activeMeta.subject, allMessages.length > 0);
 		updateActiveChatSubjectUi();
+
+		// Phase 1: Render text history immediately so reload feels instant.
+		messagesContainer.innerHTML = "";
+		if (allMessages.length > 0) {
+			hideWelcomeScreen();
+			allMessages.forEach((msg) => {
+				if (!isQuizSummaryMessage(msg) && !isFlashcardSummaryMessage(msg) && !isMindmapSummaryMessage(msg)) {
+					appendMessage(msg, false, false);
+				}
+			});
+
+			messagesContainer
+				.querySelectorAll('.ai-message .message-content[data-math-candidate="1"]')
+				.forEach((bubble) => renderMath(bubble));
+			chatArea.scrollTop = chatArea.scrollHeight;
+		} else {
+			showWelcomeScreen();
+		}
+
+		setChatStatus("", false);
+
+		const [quizzesPayload, flashcardsPayload, mindmapsPayload] = await Promise.all([
+			quizzesPromise,
+			flashcardsPromise,
+			mindmapsPromise,
+		]);
+
+		if (state.activeChatId !== activeChatId) {
+			return;
+		}
 
 		const rawQuizzes = Array.isArray(quizzesPayload && quizzesPayload.quizzes)
 			? quizzesPayload.quizzes
@@ -1961,6 +2005,12 @@ async function loadMessages() {
 			.filter((mindmap) => !!mindmap);
 		const mindmapsByIndex = buildMindmapIndexMap(mindmaps);
 
+		const hasStructuredContent = quizzes.length > 0 || flashcards.length > 0 || mindmaps.length > 0;
+		if (!hasStructuredContent) {
+			return;
+		}
+
+		// Phase 2: Rebuild once structured payloads arrive so launcher cards keep index order.
 		messagesContainer.innerHTML = "";
 
 		if (allMessages.length > 0 || quizzes.length > 0 || flashcards.length > 0 || mindmaps.length > 0) {
@@ -1971,7 +2021,7 @@ async function loadMessages() {
 					: fallbackIndex;
 
 				if (!isQuizSummaryMessage(msg) && !isFlashcardSummaryMessage(msg) && !isMindmapSummaryMessage(msg)) {
-					appendMessage(msg, false);
+					appendMessage(msg, false, false);
 				}
 
 				renderQuizzesAtMessageIndex(quizzesByIndex, messageIndex, null, false);
@@ -1979,9 +2029,9 @@ async function loadMessages() {
 				renderMindmapsAtMessageIndex(mindmapsByIndex, messageIndex, null, false);
 			});
 
-			messagesContainer.querySelectorAll(".ai-message .message-content").forEach((bubble) => {
-				renderMath(bubble);
-			});
+			messagesContainer
+				.querySelectorAll('.ai-message .message-content[data-math-candidate="1"]')
+				.forEach((bubble) => renderMath(bubble));
 
 			chatArea.scrollTop = chatArea.scrollHeight;
 		} else {

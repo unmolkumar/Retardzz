@@ -625,7 +625,20 @@ async def list_messages(
 
     cursor = (
         db["messages"]
-        .find({"chat_id": parsed_chat_id})
+        .find(
+            {"chat_id": parsed_chat_id},
+            {
+                "chat_id": 1,
+                "user_id": 1,
+                "role": 1,
+                "content": 1,
+                "created_at": 1,
+                "message_index": 1,
+                "response_level": 1,
+                "is_quiz_interaction": 1,
+                "command_dispatch_preview": 1,
+            },
+        )
         .sort("created_at", 1)
     )
 
@@ -635,11 +648,7 @@ async def list_messages(
     skip_next_assistant_feedback = False
     for sequential_index, document in enumerate(documents):
         stored_index = document.get("message_index")
-        if stored_index != sequential_index:
-            await db["messages"].update_one(
-                {"_id": document["_id"]},
-                {"$set": {"message_index": sequential_index}},
-            )
+        effective_message_index = stored_index if isinstance(stored_index, int) and stored_index >= 0 else sequential_index
 
         role = document.get("role", "user")
         raw_content = str(document.get("content", ""))
@@ -675,7 +684,7 @@ async def list_messages(
                 role=role,
                 content=sanitized_content,  # Sanitized content for frontend
                 created_at=document["created_at"],
-                message_index=sequential_index,
+                message_index=effective_message_index,
                 response_level=document.get("response_level"),
                 command_dispatch_preview=command_dispatch_preview,
             )

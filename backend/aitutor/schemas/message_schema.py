@@ -13,6 +13,7 @@ class CreateMessageRequest(BaseModel):
 	user_id: str = Field(..., min_length=1)
 	role: str = Field(..., pattern="^(user|assistant)$")
 	content: str = Field(..., min_length=1)
+	command_dispatch_preview: Optional[str] = Field(default=None)
 
 
 class MessageResponse(BaseModel):
@@ -26,6 +27,7 @@ class MessageResponse(BaseModel):
 	created_at: datetime
 	message_index: Optional[int] = None
 	response_level: Optional[str] = None
+	command_dispatch_preview: Optional[str] = None
 
 
 class SendMessageRequest(BaseModel):
@@ -35,6 +37,7 @@ class SendMessageRequest(BaseModel):
 	user_id: str = Field(..., min_length=1)
 	content: str = Field(..., min_length=1)
 	api_prompt: Optional[str] = Field(default=None)
+	command_dispatch_preview: Optional[str] = Field(default=None)
 	
 	# Educational mode settings
 	difficulty_level: Optional[str] = Field(default="Neutral")

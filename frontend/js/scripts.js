@@ -1176,6 +1176,20 @@ function createMessageElement(message, animate = false) {
 		}
 		content.appendChild(richContent);
 	} else {
+		const commandPreviewRaw = typeof message.commandDispatchPreview === "string"
+			? message.commandDispatchPreview
+			: (typeof message.command_dispatch_preview === "string"
+				? message.command_dispatch_preview
+				: "");
+		const commandPreview = commandPreviewRaw.trim();
+
+		if (commandPreview) {
+			const commandPreviewEl = document.createElement("div");
+			commandPreviewEl.classList.add("user-command-preview");
+			commandPreviewEl.textContent = commandPreview;
+			content.appendChild(commandPreviewEl);
+		}
+
 		const userText = document.createElement("span");
 		userText.classList.add("user-message-text");
 		userText.textContent = trimmed;
@@ -2062,6 +2076,9 @@ async function sendMessage(content) {
 	syncSelectionControlsLock();
 
 	const userMessage = { role: "user", content: visibleUserContent };
+	if (commandSendPayload && commandSendPayload.commandDispatchPreview) {
+		userMessage.commandDispatchPreview = commandSendPayload.commandDispatchPreview;
+	}
 	appendMessage(userMessage, false);
 	chatArea.scrollTop = chatArea.scrollHeight;
 
@@ -2082,6 +2099,9 @@ async function sendMessage(content) {
 				user_id: state.userId,
 				content: contentForApi,
 				api_prompt: apiPrompt,
+				command_dispatch_preview: commandSendPayload
+					? commandSendPayload.commandDispatchPreview
+					: undefined,
 				difficulty_level: difficultyAtSend,
 				selected_subject: isFirstMessageForChat ? selectedSubjectAtSend : undefined,
 			},
@@ -5819,25 +5839,30 @@ function buildCommandSendPayload(rawMessage, difficultyLevel) {
 	let payloadContent = topic;
 	let thinkingMode = "normal";
 	let apiPrompt = buildApiPrompt(topic, difficultyLevel);
+	let commandDispatchPreview = "";
 
 	if (parsedCommand.commandId === "quiz") {
 		const quizMode = commandMenuState.selectedQuizMode === "quick" ? "quick" : "visual";
 		if (quizMode === "visual") {
 			payloadContent = `quiz me on ${topic}`;
 			thinkingMode = "quiz";
+			commandDispatchPreview = "@quiz visual ->";
 			apiPrompt = `${apiPrompt}\n\n[VISUAL QUIZ COMMAND]\nGenerate a quiz for topic \"${topic}\" in strict quiz JSON format.`;
 		} else {
 			payloadContent = topic;
 			thinkingMode = "normal";
+			commandDispatchPreview = "@quiz quick ->";
 			apiPrompt = `${apiPrompt}\n\n[QUICK QUIZ COMMAND]\nStart a quick quiz in chat about \"${topic}\". Ask one MCQ at a time with options A-D, wait for user answer, then continue. Do not output JSON.`;
 		}
 	} else if (parsedCommand.commandId === "flashcard") {
 		payloadContent = `flashcards on ${topic}`;
 		thinkingMode = "flashcard";
+		commandDispatchPreview = "@flashcard ->";
 		apiPrompt = `${apiPrompt}\n\n[FLASHCARD COMMAND]\nGenerate flashcards for topic \"${topic}\" in strict flashcard JSON format.`;
 	} else if (parsedCommand.commandId === "mindmap") {
 		payloadContent = `mind map on ${topic}`;
 		thinkingMode = "mindmap";
+		commandDispatchPreview = "@mindmap ->";
 		apiPrompt = `${apiPrompt}\n\n[MINDMAP COMMAND]\nGenerate a mind map for topic \"${topic}\" in strict mind map JSON format.`;
 	}
 
@@ -5846,6 +5871,7 @@ function buildCommandSendPayload(rawMessage, difficultyLevel) {
 		payloadContent,
 		apiPrompt,
 		thinkingMode,
+		commandDispatchPreview,
 	};
 }
 

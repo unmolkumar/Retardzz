@@ -572,6 +572,7 @@ async def create_message(
         user_id=user_id,
         role=payload.role,
         content=payload.content,
+        command_dispatch_preview=payload.command_dispatch_preview,
     )
     message.message_index = message_index
     result = await db["messages"].insert_one(message.to_document())
@@ -585,6 +586,7 @@ async def create_message(
         created_at=message.created_at,
         message_index=message_index,
         response_level=None,
+        command_dispatch_preview=message.command_dispatch_preview,
     )
 
 
@@ -635,6 +637,9 @@ async def list_messages(
         # SECURITY: Sanitize assistant responses to hide stopped text
         # User messages pass through unchanged, assistant messages are sanitized
         sanitized_content = _sanitize_response_content(raw_content) if role == "assistant" else raw_content
+        command_dispatch_preview = document.get("command_dispatch_preview")
+        if not isinstance(command_dispatch_preview, str):
+            command_dispatch_preview = None
         
         messages.append(
             MessageResponse(
@@ -646,6 +651,7 @@ async def list_messages(
                 created_at=document["created_at"],
                 message_index=sequential_index,
                 response_level=document.get("response_level"),
+                command_dispatch_preview=command_dispatch_preview,
             )
         )
 
@@ -698,6 +704,7 @@ async def send_message(
         user_id=user_id,
         role="user",
         content=payload.content,
+        command_dispatch_preview=payload.command_dispatch_preview,
     )
     user_message.message_index = next_index
     await db["messages"].insert_one(user_message.to_document())

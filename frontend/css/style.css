@@ -934,6 +934,28 @@ body {
 	margin: 0;
 }
 
+.user-command-preview {
+	margin: 0 0 6px;
+	padding: 4px 8px;
+	border-radius: 999px;
+	font-size: 0.68rem;
+	line-height: 1.25;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	background: rgba(15, 23, 42, 0.12);
+	color: rgba(15, 23, 42, 0.78);
+	width: fit-content;
+	max-width: 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+[data-theme="dark"] .user-command-preview {
+	background: rgba(148, 163, 184, 0.22);
+	color: rgba(241, 245, 249, 0.94);
+}
+
 /* ========================
    USER MESSAGE COPY BUTTON
    ========================

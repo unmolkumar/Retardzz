@@ -4,6 +4,7 @@ from ..schemas import (
 	RoomCreateRequest, RoomJoinRequest, RoomJoinRequestResponse, RoomInviteRequest,
 	RoomRemoveMemberRequest, RoomResponse, RoomListResponse,
 	RoomActionResponse, RoomInvitationListResponse, RoomJoinApprovalListResponse,
+	RoomJoinRequestStatusListResponse,
 	LeaveRoomResponse,
 	MessageCreateRequest, MessageResponse, MessageListResponse,
 	MemberListResponse
@@ -11,7 +12,7 @@ from ..schemas import (
 from ..services import (
 	create_room, join_room_by_code, invite_user_by_username,
 	get_pending_invitations, accept_invitation, reject_invitation,
-	get_join_requests, approve_join_request, reject_join_request,
+	get_join_requests, get_my_join_request_statuses, approve_join_request, reject_join_request,
 	get_room_by_id, get_rooms_for_user, send_message, get_messages,
 	get_room_members, remove_member_from_room, leave_room, delete_room
 )
@@ -68,6 +69,12 @@ async def api_reject_invitation(invitation_id: str, x_username: str = Depends(ge
 async def api_get_join_requests(room_id: str, x_username: str = Depends(get_current_user)):
 	"""List pending join requests for a room. Admin only."""
 	requests = await get_join_requests(room_id, x_username)
+	return {"requests": requests}
+
+@router.get("/join-requests/me", response_model=RoomJoinRequestStatusListResponse)
+async def api_get_my_join_request_statuses(x_username: str = Depends(get_current_user)):
+	"""Returns join request statuses for the current user."""
+	requests = await get_my_join_request_statuses(x_username)
 	return {"requests": requests}
 
 @router.post("/{room_id}/join-requests/{request_id}/approve", response_model=RoomActionResponse)

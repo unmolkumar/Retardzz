@@ -358,11 +358,13 @@
 }
 
 .hub-time-label {
-    font-size: clamp(32px, 3.8vw, 52px);
-    letter-spacing: 0.03em;
+    font-size: clamp(24px, 2.6vw, 38px);
+    letter-spacing: 0.015em;
     color: #f8fafc;
     font-weight: 700;
-    line-height: 1.05;
+    line-height: 1.1;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 .room-hero-actions {

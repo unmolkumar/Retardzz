@@ -285,8 +285,23 @@ function formatTimeLabel(date = new Date()) {
     return date.toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit'
+        second: '2-digit',
+        hour12: false
     });
+}
+
+function parseServerTimestamp(value) {
+    if (!value || typeof value !== 'string') {
+        return Number.NaN;
+    }
+
+    const direct = Date.parse(value);
+    if (!Number.isNaN(direct)) {
+        return direct;
+    }
+
+    const normalized = `${value.replace(' ', 'T')}Z`;
+    return Date.parse(normalized);
 }
 
 function updateClockWidgets() {
@@ -321,7 +336,7 @@ function startClockTicker() {
 
 async function refreshHubQuote(showStatus = false) {
     const fallbackText = 'Small wins stack up faster than motivation spikes.';
-    const fallbackMeta = 'Fallback quote';
+    const fallbackMeta = `Updated ${formatTimeLabel(new Date())}`;
 
     try {
         const res = await fetchWithTimeout(`${API_BASE}/hub/quote`, { headers: getHeaders() });
@@ -335,18 +350,13 @@ async function refreshHubQuote(showStatus = false) {
             quote = fallbackText;
         }
 
-        if (quote === lastHubQuote) {
-            quote = `${quote} Keep pushing.`;
-        }
-
         lastHubQuote = quote;
 
         if (ui.hubQuoteText) {
             ui.hubQuoteText.textContent = quote;
         }
         if (ui.hubQuoteMeta) {
-            const source = payload.source === 'ai' ? 'Groq AI' : 'Fallback';
-            ui.hubQuoteMeta.textContent = `${source} • ${formatTimeLabel(new Date())}`;
+            ui.hubQuoteMeta.textContent = `Updated ${formatTimeLabel(new Date())}`;
         }
 
         if (showStatus) {
@@ -723,7 +733,7 @@ async function syncStudySessionFromMembers() {
         ? Number(liveMember.active_target_seconds)
         : STUDY_MODE_CONFIG[modeKey].minutes * 60;
 
-    const startedAtMs = Date.parse(liveMember.started_at || '');
+    const startedAtMs = parseServerTimestamp(liveMember.started_at || '');
     const elapsed = Number.isNaN(startedAtMs)
         ? 0
         : Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
@@ -814,6 +824,7 @@ async function startLiveStudySession() {
     studyState.isLiveStudying = true;
     studyState.liveOwner = currentUser;
     studyState.serverStartedAt = new Date().toISOString();
+    studyState.remainingSeconds = studyState.durationSeconds;
     setStatus('study-status', `${mode.label} started for everyone in this room.`);
     return true;
 }
@@ -911,6 +922,10 @@ async function handleStudyToggle() {
     const started = await startLiveStudySession();
     if (!started) {
         return;
+    }
+
+    if (!Number.isFinite(studyState.remainingSeconds) || studyState.remainingSeconds <= 0) {
+        studyState.remainingSeconds = studyState.durationSeconds;
     }
 
     startLocalStudyCountdown();

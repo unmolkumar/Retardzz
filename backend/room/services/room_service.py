@@ -20,6 +20,7 @@ INVITATION_COLLECTION = "study_room_invitations"
 JOIN_REQUEST_COLLECTION = "study_room_join_requests"
 STUDY_STATS_COLLECTION = "study_room_study_stats"
 PRESENCE_COLLECTION = "study_room_presence"
+QUOTE_CACHE_COLLECTION = "study_room_quote_cache"
 USER_COLLECTION = "users"
 
 # Status values
@@ -49,6 +50,7 @@ DEFAULT_STUDY_DURATION_SECONDS = MODE_DEFAULT_DURATIONS[DEFAULT_STUDY_MODE]
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 ROOM_QUOTE_MODEL = "llama-3.1-8b-instant"
 ONLINE_GRACE_SECONDS = 35
+QUOTE_RATE_LIMIT_SECONDS = 1800
 
 FALLBACK_ROOM_QUOTES = [
 	"Small wins stack up faster than motivation spikes.",
@@ -195,6 +197,14 @@ def _build_fallback_quote_payload(now: datetime) -> dict:
 	}
 
 
+def _normalize_datetime(value: object) -> Optional[datetime]:
+	if not isinstance(value, datetime):
+		return None
+	if value.tzinfo is None:
+		return value.replace(tzinfo=timezone.utc)
+	return value
+
+
 def generate_invite_code(length: int = 8) -> str:
 	import secrets
 	import string
@@ -246,13 +256,33 @@ async def create_room(name: str, description: str, admin_username: str) -> dict:
 
 
 async def get_room_hub_quote(username: str) -> dict:
-	"""Generate a fresh quote/fun-fact card for the room hub."""
-	_ = username
+	"""Generate a quote/fun-fact card for room hub with per-user rate limiting."""
+	db = await _get_db()
+	quote_cache_coll = db[QUOTE_CACHE_COLLECTION]
 	now = _utcnow()
 	fallback_payload = _build_fallback_quote_payload(now)
+
+	cached_doc = await quote_cache_coll.find_one({"username": username})
+	if cached_doc:
+		cached_generated_at = _normalize_datetime(cached_doc.get("generated_at"))
+		cached_quote = str(cached_doc.get("quote") or "").strip()
+		if cached_generated_at and cached_quote:
+			if _safe_elapsed_seconds(cached_generated_at, now) < QUOTE_RATE_LIMIT_SECONDS:
+				return {
+					"quote": cached_quote,
+					"source": "cached",
+					"generated_at": cached_generated_at,
+				}
+
 	api_key = os.getenv("GROQ_API_KEY_TITLE") or os.getenv("GROQ_API_KEY")
 
 	if not api_key:
+		fallback_payload["source"] = "cached-fallback"
+		await quote_cache_coll.update_one(
+			{"username": username},
+			{"$set": {"username": username, **fallback_payload, "updated_at": now}},
+			upsert=True,
+		)
 		return fallback_payload
 
 	style = random.choice(["quote", "fun fact", "focus line"])
@@ -291,15 +321,33 @@ async def get_room_hub_quote(username: str) -> dict:
 		raw_quote = str(data["choices"][0]["message"]["content"]).strip()
 		quote = _sanitize_quote(raw_quote)
 		if not quote:
+			fallback_payload["source"] = "cached-fallback"
+			await quote_cache_coll.update_one(
+				{"username": username},
+				{"$set": {"username": username, **fallback_payload, "updated_at": now}},
+				upsert=True,
+			)
 			return fallback_payload
 
-		return {
+		result_payload = {
 			"quote": quote,
 			"source": "ai",
 			"generated_at": now,
 		}
+		await quote_cache_coll.update_one(
+			{"username": username},
+			{"$set": {"username": username, **result_payload, "updated_at": now}},
+			upsert=True,
+		)
+		return result_payload
 	except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
 		logger.warning("Room quote generation failed: %s", exc)
+		fallback_payload["source"] = "cached-fallback"
+		await quote_cache_coll.update_one(
+			{"username": username},
+			{"$set": {"username": username, **fallback_payload, "updated_at": now}},
+			upsert=True,
+		)
 		return fallback_payload
 
 

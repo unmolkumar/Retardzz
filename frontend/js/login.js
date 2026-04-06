@@ -28,7 +28,7 @@ function setAuthStatus(message, isError = true) {
 
 function switchMode() {
 	authMode = authMode === "login" ? "register" : "login";
-	btnText.textContent = authMode === "login" ? "Enter ChatTutor" : "Create Account";
+	btnText.textContent = authMode === "login" ? "Enter Saivo" : "Create Account";
 	toggleModeButton.textContent = authMode === "login"
 		? "Need an account? Register"
 		: "Already have an account? Login";
@@ -115,7 +115,7 @@ async function handleAuth(username, password) {
 
 	// Show loading state
 	authSubmit.disabled = true;
-	btnText.textContent = authMode === "login" ? "Entering ChatTutor..." : "Creating Account...";
+	btnText.textContent = authMode === "login" ? "Entering Saivo..." : "Creating Account...";
 
 	try {
 		const endpoint = authMode === "login" ? "/auth/login" : "/auth/register";
@@ -163,7 +163,7 @@ async function handleAuth(username, password) {
 		setTimeout(() => loginCard.classList.remove("shake"), 500);
 	} finally {
 		authSubmit.disabled = false;
-		btnText.textContent = authMode === "login" ? "Enter ChatTutor" : "Create Account";
+		btnText.textContent = authMode === "login" ? "Enter Saivo" : "Create Account";
 	}
 }
 
@@ -305,23 +305,23 @@ const todayDate = new Date().toLocaleDateString('en-US', {
 // Terms of Service content
 const termsContent = `
 	<p class="legal-update">Last updated: ${todayDate}</p>
-	<p>By using ChatTutor, you agree to the following terms.</p>
+	<p>By using Saivo, you agree to the following terms.</p>
 	
-	<h3>1. About ChatTutor</h3>
-	<p>ChatTutor is an AI-powered assistant created for learning, productivity, and general assistance. It is a student-built project and is provided for informational purposes only.</p>
+	<h3>1. About Saivo</h3>
+	<p>Saivo is an AI-powered assistant created for learning, productivity, and general assistance. It is a student-built project and is provided for informational purposes only.</p>
 	
 	<h3>2. User Responsibilities</h3>
 	<p>You agree to:</p>
 	<ul>
-		<li>Use ChatTutor legally and respectfully</li>
+		<li>Use Saivo legally and respectfully</li>
 		<li>Not misuse the system for harmful, illegal, or abusive activities</li>
 		<li>Not attempt to exploit, reverse-engineer, or overload the system</li>
 	</ul>
 	
 	<h3>3. AI Responses</h3>
 	<ul>
-		<li>ChatTutor responses may be inaccurate or incomplete</li>
-		<li>Do not rely on ChatTutor for medical, legal, or financial decisions</li>
+		<li>Saivo responses may be inaccurate or incomplete</li>
+		<li>Do not rely on Saivo for medical, legal, or financial decisions</li>
 		<li>You are responsible for how you use the information provided</li>
 	</ul>
 	
@@ -338,18 +338,18 @@ const termsContent = `
 	</ul>
 	
 	<h3>6. Availability</h3>
-	<p>Sometimes ChatTutor may be unavailable due to maintenance, updates, or technical issues.</p>
+	<p>Sometimes Saivo may be unavailable due to maintenance, updates, or technical issues.</p>
 	
 	<h3>7. Changes to Terms</h3>
 	<p>These terms may change over time. Continued use means acceptance of updated terms.</p>
 	
-	<p class="legal-contact">ChatTutor is developed and maintained by Kush Dalal, Computer Science student, Chandigarh University.</p>
+	<p class="legal-contact">Saivo is developed and maintained by Kush Dalal, Computer Science student, Chandigarh University.</p>
 `;
 
 // Privacy Policy content
 const privacyContent = `
 	<p class="legal-update">Last updated: ${todayDate}</p>
-	<p>Your privacy matters. This policy explains how ChatTutor handles data.</p>
+	<p>Your privacy matters. This policy explains how Saivo handles data.</p>
 	
 	<h3>1. Information We Collect</h3>
 	<ul>
@@ -372,10 +372,10 @@ const privacyContent = `
 	</ul>
 	
 	<h3>4. Third-Party Services</h3>
-	<p>ChatTutor may use external AI APIs to generate responses. No personal data is sold or shared for advertising.</p>
+	<p>Saivo may use external AI APIs to generate responses. No personal data is sold or shared for advertising.</p>
 	
 	<h3>5. Cookies & Tracking</h3>
-	<p>ChatTutor does not use advertising cookies or third-party trackers.</p>
+	<p>Saivo does not use advertising cookies or third-party trackers.</p>
 	
 	<h3>6. Data Security</h3>
 	<p>Reasonable measures are taken to protect user data, but no system is 100% secure.</p>
@@ -385,7 +385,7 @@ const privacyContent = `
 	<ul>
 		<li>Delete chats</li>
 		<li>Log out at any time</li>
-		<li>Stop using ChatTutor whenever you want</li>
+		<li>Stop using Saivo whenever you want</li>
 	</ul>
 	
 	<h3>8. Changes to Policy</h3>

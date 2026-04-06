@@ -69,7 +69,7 @@ let isSendingMessage = false;
 // Helper to update title bar visibility (desktop + mobile)
 function updateTitleBar(title) {
 	// Update desktop title
-	if (title && title !== "ChatTutor") {
+	if (title && title !== "Saivo") {
 		chatTitle.textContent = title;
 	} else {
 		chatTitle.textContent = "";
@@ -145,7 +145,7 @@ const mobileChatTitleFull = document.getElementById("mobile-chat-title-full");
 function updateMobileChatTitle(fullTitle) {
 	if (!mobileChatTitleText || !mobileChatTitleFull) return;
 	
-	if (!fullTitle || fullTitle === "ChatTutor") {
+	if (!fullTitle || fullTitle === "Saivo") {
 		// No active chat - hide mobile title
 		mobileChatTitleText.textContent = "";
 		mobileChatTitleFull.textContent = "";
@@ -755,7 +755,7 @@ function showThinkingIndicator() {
 	avatar.classList.add("message-avatar");
 	const logo = document.createElement("img");
 	logo.src = "assests/logo.png";
-	logo.alt = "ChatTutor";
+	logo.alt = "Saivo";
 	logo.classList.add("bot-logo");
 	avatar.appendChild(logo);
 	wrapper.appendChild(avatar);
@@ -798,7 +798,7 @@ function createMessageElement(message, animate = false) {
 		avatar.classList.add("message-avatar");
 		const logo = document.createElement("img");
 		logo.src = "assests/logo.png";
-		logo.alt = "ChatTutor";
+		logo.alt = "Saivo";
 		logo.classList.add("bot-logo");
 		avatar.appendChild(logo);
 		wrapper.appendChild(avatar);
@@ -1247,7 +1247,7 @@ function renderChatList(chats) {
 		chatList.appendChild(emptyState);
 		state.activeChatId = null;
 		localStorage.removeItem("activeChatId");
-		updateTitleBar("ChatTutor");
+		updateTitleBar("Saivo");
 		return;
 	}
 
@@ -1363,7 +1363,7 @@ function renderChatList(chats) {
 		// If the stored activeChatId doesn't exist in chat list, clear it
 		state.activeChatId = null;
 		localStorage.removeItem("activeChatId");
-		updateTitleBar("ChatTutor");
+		updateTitleBar("Saivo");
 	}
 }
 
@@ -1434,7 +1434,7 @@ function createNewChat() {
 	state.activeChatId = null;
 	localStorage.removeItem("activeChatId");
 	messagesContainer.innerHTML = "";
-	updateTitleBar("ChatTutor");
+	updateTitleBar("Saivo");
 	setChatStatus("", false);
 
 	// Show welcome screen for new chat
@@ -1625,7 +1625,7 @@ async function initializeApp() {
 	if (state.activeChatId) {
 		await loadMessages();
 	} else {
-		updateTitleBar("ChatTutor");
+		updateTitleBar("Saivo");
 		showWelcomeScreen();  // Show welcome on initial load with no active chat
 	}
 }
@@ -2353,7 +2353,7 @@ if (deleteDoneBtn) {
 // WHY DISABLED:
 // File upload feature is temporarily disabled due to high server demand.
 // Instead of showing a confusing error or browser alert, we display a
-// user-friendly modal that matches the ChatTutor design system.
+// user-friendly modal that matches the Saivo design system.
 //
 // ACCESSIBILITY:
 // - ESC key closes the modal

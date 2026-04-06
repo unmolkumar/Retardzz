@@ -1256,7 +1256,7 @@ body {
    when user clicks the attach file button.
    
    Design: Card-style centered modal with glassmorphism effect
-   Matches ChatTutor dark theme with smooth animations
+   Matches Saivo dark theme with smooth animations
    ======================== */
 
 .upload-modal-overlay {
@@ -1554,7 +1554,7 @@ body {
 		gap: 8px;
 	}
 
-	/* Hide ChatTutor logo on mobile */
+	/* Hide Saivo logo on mobile */
 	.main-header .brand-title {
 		display: none;
 	}

@@ -206,6 +206,18 @@
 
 		<div class="input-container-wrapper">
 			<div class="input-container">
+				<div class="command-suggestions" id="command-suggestions" hidden aria-hidden="true" role="listbox" aria-label="Command suggestions">
+					<div class="command-suggestions-title" id="command-suggestions-title">Commands</div>
+					<div class="command-suggestions-warning" id="command-suggestions-warning" hidden></div>
+					<div class="command-suggestions-list" id="command-suggestions-list"></div>
+					<div class="command-suggestions-confirm" id="command-suggestions-confirm" hidden>
+						<p class="command-suggestions-confirm-text" id="command-suggestions-confirm-text"></p>
+						<div class="command-suggestions-confirm-actions">
+							<button class="command-suggestions-confirm-btn" id="command-suggestions-confirm-yes" type="button">Confirm</button>
+							<button class="command-suggestions-cancel-btn" id="command-suggestions-confirm-no" type="button">Cancel</button>
+						</div>
+					</div>
+				</div>
 				<form id="message-form" class="input-bar">
 					<button class="icon-btn" id="upload-btn" type="button" title="Upload File">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"

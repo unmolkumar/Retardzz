@@ -81,6 +81,14 @@ const difficultyPickerBtn = document.getElementById("difficulty-picker-btn");
 const difficultyPickerLabel = document.getElementById("difficulty-picker-label");
 const difficultyPickerSymbol = document.getElementById("difficulty-picker-symbol");
 const difficultyPopup = document.getElementById("difficulty-popup");
+const commandSuggestions = document.getElementById("command-suggestions");
+const commandSuggestionsTitle = document.getElementById("command-suggestions-title");
+const commandSuggestionsWarning = document.getElementById("command-suggestions-warning");
+const commandSuggestionsList = document.getElementById("command-suggestions-list");
+const commandSuggestionsConfirm = document.getElementById("command-suggestions-confirm");
+const commandSuggestionsConfirmText = document.getElementById("command-suggestions-confirm-text");
+const commandSuggestionsConfirmYes = document.getElementById("command-suggestions-confirm-yes");
+const commandSuggestionsConfirmNo = document.getElementById("command-suggestions-confirm-no");
 
 // Mobile sidebar elements
 const mobileMenuBtn = document.getElementById("mobile-menu-btn");
@@ -89,6 +97,25 @@ const sidebarOverlay = document.getElementById("sidebar-overlay");
 
 let isSendingMessage = false;
 let pendingSubjectSelection = null;
+
+const COMMAND_MENU_ITEMS = [
+	{ id: "quiz", token: "@quiz", desc: "Generate a quiz" },
+	{ id: "flashcard", token: "@flashcard", desc: "Generate flashcards" },
+	{ id: "mindmap", token: "@mindmap", desc: "Generate a mind map" },
+];
+
+const QUIZ_MODE_ITEMS = [
+	{ id: "visual", label: "Visual Quiz", desc: "Current quiz popup implementation", isDefault: true },
+	{ id: "quick", label: "Quick Quiz", desc: "Questions one by one directly in chat", isDefault: false },
+];
+
+const commandMenuState = {
+	visible: false,
+	stage: "commands", // commands | quiz-modes
+	highlightedIndex: 0,
+	selectedQuizMode: "visual",
+	pendingCommandId: null,
+};
 
 // Helper to update title bar visibility (desktop + mobile)
 function updateTitleBar(title) {
@@ -1998,32 +2025,52 @@ async function sendMessage(content) {
 		}
 	}
 
+	const difficultyAtSend = normalizeDifficultyLevel(state.difficultyLevel);
+	const commandSendPayload = buildCommandSendPayload(trimmedContent, difficultyAtSend);
+	if (commandSendPayload && commandSendPayload.error) {
+		setChatStatus(commandSendPayload.error);
+		return;
+	}
+
+	const visibleUserContent = commandSendPayload
+		? commandSendPayload.visibleUserContent
+		: trimmedContent;
+	const contentForApi = commandSendPayload
+		? commandSendPayload.payloadContent
+		: trimmedContent;
+	const apiPrompt = commandSendPayload
+		? commandSendPayload.apiPrompt
+		: buildApiPrompt(trimmedContent, difficultyAtSend);
+	const forcedThinkingMode = commandSendPayload
+		? commandSendPayload.thinkingMode
+		: null;
+
 	isSendingMessage = true;
 	messageInput.value = "";
 	messageInput.style.height = "auto";
+	closeCommandSuggestions(true);
 	setChatStatus("", false);
 
-	const difficultyAtSend = normalizeDifficultyLevel(state.difficultyLevel);
 	const activeMetaBeforeSend = getChatMeta(state.activeChatId);
 	const isFirstMessageForChat = !activeMetaBeforeSend.hasMessages;
 	const selectedSubjectAtSend = normalizeSessionSubject(state.draftSubject);
-	const apiPrompt = buildApiPrompt(trimmedContent, difficultyAtSend);
 
 	// CHAT-SCOPED GENERATION: Track which chat is generating
 	generatingChatId = state.activeChatId;
 	isGenerating = true;
 	syncSelectionControlsLock();
 
-	const userMessage = { role: "user", content: trimmedContent };
+	const userMessage = { role: "user", content: visibleUserContent };
 	appendMessage(userMessage, false);
 	chatArea.scrollTop = chatArea.scrollHeight;
 
 	const thinkingStartTime = Date.now();
-	const thinkingMode = isMindmapRequestPrompt(trimmedContent)
+	const thinkingSeed = contentForApi;
+	const thinkingMode = forcedThinkingMode || (isMindmapRequestPrompt(thinkingSeed)
 		? "mindmap"
-		: (isFlashcardRequestPrompt(trimmedContent)
+		: (isFlashcardRequestPrompt(thinkingSeed)
 		? "flashcard"
-		: (isQuizRequestPrompt(trimmedContent) ? "quiz" : "normal"));
+		: (isQuizRequestPrompt(thinkingSeed) ? "quiz" : "normal")));
 	showThinkingIndicator(thinkingMode);
 
 	try {
@@ -2032,7 +2079,7 @@ async function sendMessage(content) {
 			body: {
 				chat_id: state.activeChatId,
 				user_id: state.userId,
-				content: trimmedContent,
+				content: contentForApi,
 				api_prompt: apiPrompt,
 				difficulty_level: difficultyAtSend,
 				selected_subject: isFirstMessageForChat ? selectedSubjectAtSend : undefined,
@@ -2189,7 +2236,9 @@ async function sendMessage(content) {
 		generatingChatId = null;
 		hideStopButton();
 
-		messageInput.value = trimmedContent;
+		messageInput.value = content;
+		autoResizeTextarea();
+		updateCommandSuggestionsFromInput();
 		messageInput.focus();
 		setChatStatus(error.message || "Unable to send message");
 	} finally {
@@ -5431,6 +5480,344 @@ function toggleDifficultyPopup() {
 	}
 }
 
+function resetCommandMenuState() {
+	commandMenuState.visible = false;
+	commandMenuState.stage = "commands";
+	commandMenuState.highlightedIndex = 0;
+	commandMenuState.selectedQuizMode = "visual";
+	commandMenuState.pendingCommandId = null;
+}
+
+function isCommandSuggestionsVisible() {
+	return Boolean(commandSuggestions && !commandSuggestions.hidden && commandMenuState.visible);
+}
+
+function getCommandItemsForStage() {
+	return commandMenuState.stage === "quiz-modes" ? QUIZ_MODE_ITEMS : COMMAND_MENU_ITEMS;
+}
+
+function closeCommandSuggestions(resetState = false) {
+	if (!commandSuggestions) {
+		return;
+	}
+
+	commandSuggestions.hidden = true;
+	commandSuggestions.setAttribute("aria-hidden", "true");
+	commandMenuState.visible = false;
+
+	if (resetState) {
+		resetCommandMenuState();
+	}
+}
+
+function openCommandSuggestions() {
+	if (!commandSuggestions) {
+		return;
+	}
+
+	commandSuggestions.hidden = false;
+	commandSuggestions.setAttribute("aria-hidden", "false");
+	commandMenuState.visible = true;
+}
+
+function inferCommandHighlightIndex(commandKey) {
+	if (!commandKey) {
+		return 0;
+	}
+
+	const firstLetter = commandKey.trim().charAt(0).toLowerCase();
+	if (firstLetter === "f") {
+		return 1;
+	}
+	if (firstLetter === "m") {
+		return 2;
+	}
+	return 0;
+}
+
+function getSlashCandidateFromInput(rawValue) {
+	if (typeof rawValue !== "string") {
+		return null;
+	}
+
+	const trimmedLeft = rawValue.replace(/^\s+/, "");
+	if (!trimmedLeft) {
+		return null;
+	}
+
+	const trigger = trimmedLeft.charAt(0);
+	if (trigger !== "@" && trigger !== "\\") {
+		return null;
+	}
+
+	const tokenMatch = trimmedLeft.match(/^([@\\][^\s]*)/);
+	const token = tokenMatch ? tokenMatch[1] : trigger;
+	const commandKey = token.slice(1).toLowerCase();
+	const topicPart = trimmedLeft.replace(/^[@\\][^\s]*/, "").trimStart();
+
+	return {
+		trigger,
+		token,
+		commandKey,
+		topicPart,
+	};
+}
+
+function ensureInputToken(commandToken) {
+	if (!messageInput) {
+		return;
+	}
+
+	const rawValue = messageInput.value || "";
+	const leadingWhitespace = (rawValue.match(/^\s*/) || [""])[0];
+	const trimmedLeft = rawValue.slice(leadingWhitespace.length);
+	const topicPart = trimmedLeft.replace(/^[@\\][^\s]*/, "").trimStart();
+
+	const nextValue = `${leadingWhitespace}${commandToken}${topicPart ? ` ${topicPart}` : " "}`;
+	messageInput.value = nextValue;
+	autoResizeTextarea();
+	messageInput.focus();
+	messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+}
+
+function renderCommandSuggestionList() {
+	if (!commandSuggestionsList || !commandSuggestionsTitle || !commandSuggestionsWarning) {
+		return;
+	}
+
+	const items = getCommandItemsForStage();
+	const maxIndex = Math.max(0, items.length - 1);
+	commandMenuState.highlightedIndex = Math.min(commandMenuState.highlightedIndex, maxIndex);
+
+	if (commandMenuState.stage === "quiz-modes") {
+		commandSuggestionsTitle.textContent = "@quiz options";
+		commandSuggestionsWarning.hidden = false;
+		commandSuggestionsWarning.textContent = "Select quiz mode before topic. Visual Quiz is default.";
+	} else {
+		commandSuggestionsTitle.textContent = "Commands";
+		commandSuggestionsWarning.hidden = true;
+	}
+
+	commandSuggestionsList.innerHTML = "";
+	items.forEach((item, index) => {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "command-suggestion-item";
+		button.setAttribute("role", "option");
+		button.dataset.index = String(index);
+		button.classList.toggle("active", index === commandMenuState.highlightedIndex);
+
+		const main = document.createElement("span");
+		main.className = "command-suggestion-main";
+
+		const token = document.createElement("span");
+		token.className = "command-suggestion-token";
+		token.textContent = commandMenuState.stage === "quiz-modes" ? item.label : item.token;
+
+		const desc = document.createElement("span");
+		desc.className = "command-suggestion-desc";
+		desc.textContent = item.desc;
+
+		main.appendChild(token);
+		main.appendChild(desc);
+
+		const meta = document.createElement("span");
+		meta.className = "command-suggestion-meta";
+		if (commandMenuState.stage === "quiz-modes" && item.isDefault) {
+			meta.textContent = "Default";
+		} else {
+			meta.textContent = index === commandMenuState.highlightedIndex ? "Enter" : "";
+		}
+
+		button.appendChild(main);
+		button.appendChild(meta);
+
+		button.addEventListener("click", () => {
+			commandMenuState.highlightedIndex = index;
+			selectHighlightedCommandSuggestion();
+		});
+
+		commandSuggestionsList.appendChild(button);
+	});
+
+	if (commandSuggestionsConfirm) {
+		commandSuggestionsConfirm.hidden = true;
+	}
+}
+
+function moveCommandSuggestionHighlight(direction) {
+	const items = getCommandItemsForStage();
+	if (!items.length) {
+		return;
+	}
+
+	const lastIndex = items.length - 1;
+	if (direction > 0) {
+		commandMenuState.highlightedIndex = commandMenuState.highlightedIndex >= lastIndex
+			? 0
+			: commandMenuState.highlightedIndex + 1;
+	} else {
+		commandMenuState.highlightedIndex = commandMenuState.highlightedIndex <= 0
+			? lastIndex
+			: commandMenuState.highlightedIndex - 1;
+	}
+
+	renderCommandSuggestionList();
+}
+
+function selectHighlightedCommandSuggestion() {
+	const items = getCommandItemsForStage();
+	const selected = items[commandMenuState.highlightedIndex];
+	if (!selected) {
+		return false;
+	}
+
+	if (commandMenuState.stage === "commands") {
+		ensureInputToken(selected.token);
+		if (selected.id === "quiz") {
+			commandMenuState.pendingCommandId = "quiz";
+			commandMenuState.selectedQuizMode = "visual";
+			commandMenuState.stage = "quiz-modes";
+			commandMenuState.highlightedIndex = 0;
+			openCommandSuggestions();
+			renderCommandSuggestionList();
+			showToast("Choose quiz mode, then type topic.");
+			return true;
+		}
+
+		commandMenuState.pendingCommandId = selected.id;
+		closeCommandSuggestions();
+		showToast(`${selected.token} selected. Type topic and send.`);
+		return true;
+	}
+
+	commandMenuState.selectedQuizMode = selected.id;
+	closeCommandSuggestions();
+	showToast(`${selected.label} selected. Now type quiz topic.`);
+	return true;
+}
+
+function updateCommandSuggestionsFromInput() {
+	if (!messageInput) {
+		return;
+	}
+
+	const candidate = getSlashCandidateFromInput(messageInput.value);
+	if (!candidate) {
+		closeCommandSuggestions(true);
+		return;
+	}
+
+	if (candidate.commandKey && !candidate.commandKey.startsWith("quiz")) {
+		commandMenuState.selectedQuizMode = "visual";
+		commandMenuState.pendingCommandId = null;
+	}
+
+	if (commandMenuState.stage === "quiz-modes") {
+		if (!candidate.commandKey.startsWith("quiz")) {
+			commandMenuState.stage = "commands";
+			commandMenuState.highlightedIndex = inferCommandHighlightIndex(candidate.commandKey);
+			renderCommandSuggestionList();
+			openCommandSuggestions();
+			return;
+		}
+
+		if (candidate.topicPart) {
+			closeCommandSuggestions();
+			return;
+		}
+
+		openCommandSuggestions();
+		renderCommandSuggestionList();
+		return;
+	}
+
+	commandMenuState.stage = "commands";
+	commandMenuState.highlightedIndex = inferCommandHighlightIndex(candidate.commandKey);
+	openCommandSuggestions();
+	renderCommandSuggestionList();
+}
+
+function parseCommandMessage(rawMessage) {
+	const candidate = getSlashCandidateFromInput(rawMessage || "");
+	if (!candidate) {
+		return null;
+	}
+
+	const normalizedCommand = candidate.commandKey.toLowerCase();
+	let commandId = null;
+	if (normalizedCommand === "q" || normalizedCommand.startsWith("quiz")) {
+		commandId = "quiz";
+	} else if (
+		normalizedCommand === "f" ||
+		normalizedCommand.startsWith("flashcard") ||
+		normalizedCommand.startsWith("flashcards")
+	) {
+		commandId = "flashcard";
+	} else if (
+		normalizedCommand === "m" ||
+		normalizedCommand.startsWith("mindmap") ||
+		normalizedCommand.startsWith("mind")
+	) {
+		commandId = "mindmap";
+	}
+
+	if (!commandId) {
+		return null;
+	}
+
+	return {
+		commandId,
+		topic: candidate.topicPart.trim(),
+	};
+}
+
+function buildCommandSendPayload(rawMessage, difficultyLevel) {
+	const parsedCommand = parseCommandMessage(rawMessage);
+	if (!parsedCommand) {
+		return null;
+	}
+
+	if (!parsedCommand.topic) {
+		return {
+			error: "Please add a topic after the command. Example: @quiz neural networks",
+		};
+	}
+
+	const topic = parsedCommand.topic;
+	let payloadContent = topic;
+	let thinkingMode = "normal";
+	let apiPrompt = buildApiPrompt(topic, difficultyLevel);
+
+	if (parsedCommand.commandId === "quiz") {
+		const quizMode = commandMenuState.selectedQuizMode === "quick" ? "quick" : "visual";
+		if (quizMode === "visual") {
+			payloadContent = `quiz me on ${topic}`;
+			thinkingMode = "quiz";
+			apiPrompt = `${apiPrompt}\n\n[VISUAL QUIZ COMMAND]\nGenerate a quiz for topic \"${topic}\" in strict quiz JSON format.`;
+		} else {
+			payloadContent = topic;
+			thinkingMode = "normal";
+			apiPrompt = `${apiPrompt}\n\n[QUICK QUIZ COMMAND]\nStart a quick quiz in chat about \"${topic}\". Ask one MCQ at a time with options A-D, wait for user answer, then continue. Do not output JSON.`;
+		}
+	} else if (parsedCommand.commandId === "flashcard") {
+		payloadContent = `flashcards on ${topic}`;
+		thinkingMode = "flashcard";
+		apiPrompt = `${apiPrompt}\n\n[FLASHCARD COMMAND]\nGenerate flashcards for topic \"${topic}\" in strict flashcard JSON format.`;
+	} else if (parsedCommand.commandId === "mindmap") {
+		payloadContent = `mind map on ${topic}`;
+		thinkingMode = "mindmap";
+		apiPrompt = `${apiPrompt}\n\n[MINDMAP COMMAND]\nGenerate a mind map for topic \"${topic}\" in strict mind map JSON format.`;
+	}
+
+	return {
+		visibleUserContent: topic,
+		payloadContent,
+		apiPrompt,
+		thinkingMode,
+	};
+}
+
 function resetSubjectConfirmation() {
 	pendingSubjectSelection = null;
 	if (subjectConfirmBox) {
@@ -5566,6 +5953,13 @@ document.addEventListener("click", (event) => {
 		closeDifficultyPopup();
 	}
 
+	const clickInsideCommandUi =
+		(commandSuggestions && commandSuggestions.contains(event.target)) ||
+		(messageInput && messageInput.contains(event.target));
+	if (!clickInsideCommandUi) {
+		closeCommandSuggestions(true);
+	}
+
 	if (subjectSelectShell && !subjectSelectShell.contains(event.target)) {
 		closeSubjectPickerPopup(true);
 	}
@@ -5574,6 +5968,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
 	if (event.key === "Escape") {
 		closeDifficultyPopup();
+		closeCommandSuggestions(true);
 		closeSubjectPickerPopup(true);
 	}
 });
@@ -5688,15 +6083,56 @@ function autoResizeTextarea() {
 	messageInput.style.height = messageInput.scrollHeight + 'px';
 }
 
-messageInput.addEventListener('input', autoResizeTextarea);
+messageInput.addEventListener('input', () => {
+	autoResizeTextarea();
+	updateCommandSuggestionsFromInput();
+});
 
 // Reset textarea height after form submission
 function resetTextareaHeight() {
 	messageInput.style.height = 'auto';
 }
 
+messageInput.addEventListener('keydown', function (e) {
+	if (!isCommandSuggestionsVisible()) {
+		if (e.key === 'Escape') {
+			closeCommandSuggestions(true);
+		}
+		return;
+	}
+
+	if (e.key === 'ArrowDown') {
+		e.preventDefault();
+		moveCommandSuggestionHighlight(1);
+		return;
+	}
+
+	if (e.key === 'ArrowUp') {
+		e.preventDefault();
+		moveCommandSuggestionHighlight(-1);
+		return;
+	}
+
+	if (e.key === 'Escape') {
+		e.preventDefault();
+		closeCommandSuggestions(true);
+		return;
+	}
+
+	if (e.key === 'Enter' && !e.shiftKey) {
+		e.preventDefault();
+		selectHighlightedCommandSuggestion();
+		return;
+	}
+});
+
 messageInput.addEventListener('keypress', function (e) {
 	if (e.key === 'Enter' && !e.shiftKey) {
+		if (isCommandSuggestionsVisible()) {
+			e.preventDefault();
+			return;
+		}
+
 		e.preventDefault();
 		messageForm.dispatchEvent(new Event('submit'));
 	}
@@ -5730,8 +6166,8 @@ logoutButton.addEventListener("click", () => {
 
 messageForm.addEventListener("submit", (event) => {
 	event.preventDefault();
-	const content = messageInput.value.trim();
-	if (!content) {
+	const content = messageInput.value;
+	if (!content || !content.trim()) {
 		return;
 	}
 	sendMessage(content);

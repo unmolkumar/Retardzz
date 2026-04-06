@@ -6,6 +6,8 @@ const PRESENCE_PING_MS = 12000;
 const MAX_ACTIVITY_NOTIFICATIONS = 20;
 const STUDY_TIMER_STORAGE_KEY = 'saivo_room_timer_state';
 const ROOM_NAV_STORAGE_KEY = 'saivo_room_nav_state';
+const WHITEBOARD_BASE_URL_STORAGE_KEY = 'saivo_whiteboard_base_url';
+const WHITEBOARD_DEFAULT_BASE_URL = 'http://127.0.0.1:3001';
 
 let currentUser = localStorage.getItem('username');
 let activeRoom = null;
@@ -360,6 +362,34 @@ function parseServerTimestamp(value) {
     // Backend may return naive timestamps; treat them as UTC to avoid false elapsed spikes.
     const candidate = hasTimezone ? normalized : `${normalized}Z`;
     return Date.parse(candidate);
+}
+
+function getWhiteboardBaseUrl() {
+    const override = localStorage.getItem(WHITEBOARD_BASE_URL_STORAGE_KEY);
+    if (override && override.trim()) {
+        return override.trim().replace(/\/$/, '');
+    }
+    return WHITEBOARD_DEFAULT_BASE_URL;
+}
+
+function getWhiteboardRoomUrl(roomId) {
+    return `${getWhiteboardBaseUrl()}/room/${encodeURIComponent(roomId)}`;
+}
+
+function openWhiteboardForActiveRoom() {
+    if (!activeRoom) {
+        setStatus('study-status', 'Open a room first, then launch whiteboard.');
+        return;
+    }
+
+    const whiteboardUrl = getWhiteboardRoomUrl(activeRoom);
+    const newWindow = window.open(whiteboardUrl, '_blank', 'noopener,noreferrer');
+    if (!newWindow) {
+        window.location.href = whiteboardUrl;
+        return;
+    }
+
+    setStatus('study-status', `Opened whiteboard for room ${activeRoom}.`);
 }
 
 function updateClockWidgets() {
@@ -2035,7 +2065,7 @@ if (ui.micBtn) {
 
 if (ui.whiteboardBtn) {
     ui.whiteboardBtn.addEventListener('click', () => {
-        setStatus('study-status', 'Whiteboard button is ready. Integration will be plugged in here.');
+        openWhiteboardForActiveRoom();
     });
 }
 

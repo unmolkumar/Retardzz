@@ -555,6 +555,157 @@ function parseMarkdown(text) {
 	return tokens;
 }
 
+function parseMarkdownToHtml(markdownText) {
+	const sourceText = typeof markdownText === "string" ? markdownText : "";
+	if (!sourceText.trim()) {
+		return "";
+	}
+
+	// Preserve KaTeX bracket/paren delimiters through markdown parsing.
+	const mathSafeText = sourceText
+		.replace(/\\\[/g, "\\\\[")
+		.replace(/\\\]/g, "\\\\]")
+		.replace(/\\\(/g, "\\\\(")
+		.replace(/\\\)/g, "\\\\)");
+
+	try {
+		if (typeof marked === "undefined") {
+			return "";
+		}
+
+		if (typeof marked.parse === "function") {
+			return marked.parse(mathSafeText);
+		}
+
+		if (typeof marked === "function") {
+			return marked(mathSafeText);
+		}
+	} catch (error) {
+		console.error("Markdown parsing failed:", error);
+	}
+
+	return "";
+}
+
+function extractCodeLanguageFromElement(codeElement) {
+	if (!codeElement) {
+		return "plaintext";
+	}
+
+	const languageMatch = String(codeElement.className || "").match(/language-([a-z0-9_+-]+)/i);
+	if (languageMatch && languageMatch[1]) {
+		return languageMatch[1];
+	}
+
+	return "plaintext";
+}
+
+function createCodeCopyIconButton(textToCopy) {
+	const copyBtn = document.createElement("button");
+	copyBtn.className = "copy-code-btn";
+	copyBtn.type = "button";
+	copyBtn.title = "Copy code";
+	copyBtn.setAttribute("aria-label", "Copy code");
+	copyBtn.innerHTML = COPY_ICON_SVG;
+
+	copyBtn.addEventListener("click", (event) => {
+		event.stopPropagation();
+		navigator.clipboard.writeText(textToCopy).then(() => {
+			copyBtn.innerHTML = CHECK_ICON_SVG;
+			copyBtn.classList.add("copied");
+
+			setTimeout(() => {
+				copyBtn.innerHTML = COPY_ICON_SVG;
+				copyBtn.classList.remove("copied");
+			}, 1500);
+		}).catch((error) => {
+			console.error("Failed to copy code block:", error);
+		});
+	});
+
+	return copyBtn;
+}
+
+function enhanceCodeBlocksWithCopy(targetElement) {
+	if (!targetElement) {
+		return;
+	}
+
+	const codeElements = Array.from(targetElement.querySelectorAll("pre > code"));
+	codeElements.forEach((codeElement) => {
+		const preElement = codeElement.parentElement;
+		if (!preElement) {
+			return;
+		}
+
+		if (preElement.closest(".code-block-container")) {
+			return;
+		}
+
+		const codeText = codeElement.textContent || "";
+		const language = extractCodeLanguageFromElement(codeElement);
+
+		const container = document.createElement("div");
+		container.className = "code-block-container";
+
+		const header = document.createElement("div");
+		header.className = "code-block-header";
+
+		const langLabel = document.createElement("span");
+		langLabel.className = "code-block-lang";
+		langLabel.textContent = language;
+
+		header.appendChild(langLabel);
+		header.appendChild(createCodeCopyIconButton(codeText));
+
+		const content = document.createElement("div");
+		content.className = "code-block-content";
+
+		const parentElement = preElement.parentElement;
+		if (!parentElement) {
+			return;
+		}
+
+		parentElement.insertBefore(container, preElement);
+		preElement.remove();
+		content.appendChild(preElement);
+
+		container.appendChild(header);
+		container.appendChild(content);
+	});
+}
+
+function renderMath(element) {
+	if (!element || typeof renderMathInElement !== "function") {
+		return;
+	}
+
+	renderMathInElement(element, {
+		delimiters: [
+			{ left: "$$", right: "$$", display: true },
+			{ left: "$", right: "$", display: false },
+			{ left: "\\[", right: "\\]", display: true },
+			{ left: "\\(", right: "\\)", display: false }
+		]
+	});
+}
+
+function renderAssistantRichContent(targetElement, rawText) {
+	if (!targetElement) {
+		return;
+	}
+
+	const safeText = typeof rawText === "string" ? rawText : "";
+	const markdownHtml = parseMarkdownToHtml(safeText);
+	if (!markdownHtml) {
+		targetElement.textContent = safeText;
+		return;
+	}
+
+	targetElement.innerHTML = markdownHtml;
+	enhanceCodeBlocksWithCopy(targetElement);
+}
+
 // --- WELCOME SCREEN ---
 // Show welcome screen when no active chat or no messages
 function showWelcomeScreen() {
@@ -946,75 +1097,23 @@ function createMessageElement(message, animate = false) {
 		}
 	}
 
-	// Add copy button for USER messages only
-	if (!isAssistant) {
+	if (isAssistant) {
+		const richContent = document.createElement("div");
+		richContent.classList.add("assistant-rich-content");
+		if (animate) {
+			richContent.textContent = "";
+		} else {
+			renderAssistantRichContent(richContent, trimmed);
+		}
+		content.appendChild(richContent);
+	} else {
+		const userText = document.createElement("span");
+		userText.classList.add("user-message-text");
+		userText.textContent = trimmed;
+		content.appendChild(userText);
+
 		const copyBtn = createUserMessageCopyButton(trimmed);
 		content.appendChild(copyBtn);
-	}
-
-	if (isAssistant && animate) {
-		// Use typewriter animation for AI messages
-		wrapper.appendChild(content);
-		addTypewriterAnimation(content, trimmed);
-		return wrapper;
-	} else {
-		// Instant display for user messages or non-animated AI messages
-		const tokens = parseMarkdown(trimmed);
-		let currentListItem = null;  // Track if we're inside a list item
-		
-		tokens.forEach(token => {
-			if (token.type === 'code') {
-				// Close any open list item first
-				if (currentListItem) {
-					content.appendChild(currentListItem);
-					currentListItem = null;
-				}
-				content.appendChild(createCodeBlock(token.language, token.code));
-			} else if (token.type === 'list-marker') {
-				// Close previous list item if any
-				if (currentListItem) {
-					content.appendChild(currentListItem);
-				}
-				// Start a new list item
-				currentListItem = document.createElement('li');
-			} else if (token.type === 'bold') {
-				const strong = document.createElement('strong');
-				strong.textContent = token.text;
-				if (currentListItem) {
-					currentListItem.appendChild(strong);
-				} else {
-					content.appendChild(strong);
-				}
-			} else if (token.type === 'inline-code') {
-				const code = document.createElement('code');
-				code.textContent = token.code;
-				if (currentListItem) {
-					currentListItem.appendChild(code);
-				} else {
-					content.appendChild(code);
-				}
-			} else if (token.type === 'break') {
-				// Close list item on line break
-				if (currentListItem) {
-					content.appendChild(currentListItem);
-					currentListItem = null;
-				} else {
-					content.appendChild(document.createElement('br'));
-				}
-			} else if (token.type === 'text') {
-				const textNode = document.createTextNode(token.text);
-				if (currentListItem) {
-					currentListItem.appendChild(textNode);
-				} else {
-					content.appendChild(textNode);
-				}
-			}
-		});
-		
-		// Close any remaining list item
-		if (currentListItem) {
-			content.appendChild(currentListItem);
-		}
 	}
 
 	wrapper.appendChild(content);
@@ -1039,19 +1138,7 @@ function createCodeBlock(language, code) {
 	langLabel.className = 'code-block-lang';
 	langLabel.textContent = language;
 
-	const copyBtn = document.createElement('button');
-	copyBtn.className = 'copy-code-btn';
-	copyBtn.innerHTML = '<span>Copy</span>';
-	copyBtn.onclick = () => {
-		navigator.clipboard.writeText(code).then(() => {
-			copyBtn.innerHTML = '<span>Copied!</span>';
-			copyBtn.classList.add('copied');
-			setTimeout(() => {
-				copyBtn.innerHTML = '<span>Copy</span>';
-				copyBtn.classList.remove('copied');
-			}, 2000);
-		});
-	};
+	const copyBtn = createCodeCopyIconButton(code);
 
 	header.appendChild(langLabel);
 	header.appendChild(copyBtn);
@@ -1070,8 +1157,10 @@ function createCodeBlock(language, code) {
 
 // Typewriter animation with formatting and stop support
 function addTypewriterAnimation(bubble, markdownText) {
+	const safeMarkdownText = typeof markdownText === "string" ? markdownText : "";
+
 	// Initialize render state
-	renderState.fullResponseText = markdownText;
+	renderState.fullResponseText = safeMarkdownText;
 	renderState.renderIndex = 0;
 	renderState.isRendering = true;
 	renderState.isStopped = false;
@@ -1080,7 +1169,7 @@ function addTypewriterAnimation(bubble, markdownText) {
 	// Show stop button when rendering starts
 	showStopButton();
 
-	const tokens = parseMarkdown(markdownText);
+	const tokens = parseMarkdown(safeMarkdownText);
 
 	// Convert tokens to words with formatting info
 	const words = [];
@@ -1160,6 +1249,13 @@ function addTypewriterAnimation(bubble, markdownText) {
 	function finishRendering() {
 		chatArea.removeEventListener('scroll', scrollHandler);
 		renderState.isRendering = false;
+		const completedNaturally = !renderState.isStopped;
+
+		if (completedNaturally) {
+			console.log("[Render] Typewriter complete. Applying markdown + KaTeX render pass.");
+			renderAssistantRichContent(bubble, renderState.fullResponseText);
+				renderMath(bubble);
+		}
 
 		// CHAT-SCOPED GENERATION: Reset generation state when rendering completes
 		isGenerating = false;
@@ -1169,7 +1265,7 @@ function addTypewriterAnimation(bubble, markdownText) {
 		autoScrollIfNeeded();
 
 		// If rendering completed naturally (not stopped), finalize with stopped=false
-		if (!renderState.isStopped) {
+		if (completedNaturally) {
 			finalizeResponse(false);
 		}
 		// If stopped, finalizeResponse was already called in stopRendering()
@@ -1310,6 +1406,14 @@ function appendMessage(message, animate = false) {
 	removeEmptyState();
 	const element = createMessageElement(message, animate);
 	messagesContainer.appendChild(element);
+
+	if (message.role === "assistant" && !animate) {
+		const bubble = element.querySelector(".message-content");
+		if (bubble) {
+			renderMath(bubble);
+		}
+	}
+
 	return element;
 }
 
@@ -1651,6 +1755,10 @@ async function loadMessages() {
 				renderMindmapsAtMessageIndex(mindmapsByIndex, messageIndex, null, false);
 			});
 
+			messagesContainer.querySelectorAll(".ai-message .message-content").forEach((bubble) => {
+				renderMath(bubble);
+			});
+
 			chatArea.scrollTop = chatArea.scrollHeight;
 		} else {
 			showWelcomeScreen();  // Show welcome when chat has no messages
@@ -1855,13 +1963,18 @@ async function sendMessage(content) {
 						content: response.content,
 						response_level: responseLevel,
 					};
-					appendMessage(aiMessage, true);
+					const aiElement = appendMessage(aiMessage, true);
+					const richContentContainer = aiElement
+						? aiElement.querySelector(".assistant-rich-content")
+						: null;
 
-					const isAtBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 100;
-					if (isAtBottom) {
-						setTimeout(() => {
-							chatArea.scrollTop = chatArea.scrollHeight;
-						}, 100);
+					if (richContentContainer) {
+						addTypewriterAnimation(richContentContainer, response.content);
+					} else {
+						console.warn("Typewriter target not found. Falling back to static render.");
+						isGenerating = false;
+						generatingChatId = null;
+						hideStopButton();
 					}
 				}
 			}, 500);

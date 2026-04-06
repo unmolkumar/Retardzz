@@ -773,10 +773,25 @@ body {
 .ai-message .message-content {
 	color: var(--text-main);
 	line-height: 1.8;
+	text-align: justify;
+	text-justify: inter-word;
+}
+
+.assistant-rich-content {
+	display: block;
+}
+
+.assistant-rich-content > :first-child {
+	margin-top: 0 !important;
 }
 
 .ai-message .message-content strong {
 	font-weight: 600;
+	color: var(--text-main);
+}
+
+.ai-message .message-content em {
+	font-style: italic;
 	color: var(--text-main);
 }
 
@@ -866,8 +881,14 @@ body {
 	font-size: 0.8rem;
 	display: flex;
 	align-items: center;
-	gap: 4px;
+	justify-content: center;
+	gap: 0;
 	transition: 0.2s;
+}
+
+.copy-code-btn svg {
+	width: 14px;
+	height: 14px;
 }
 
 .copy-code-btn:hover {
@@ -898,29 +919,36 @@ body {
 
 .ai-message .message-content ul,
 .ai-message .message-content ol {
-	margin: 12px 0;
-	padding-left: 0;
-	list-style: none;
+	margin: 12px 0 16px;
+	padding-left: 1.4rem;
+	list-style-position: outside;
+}
+
+.ai-message .message-content ul {
+	list-style-type: disc;
+}
+
+.ai-message .message-content ol {
+	list-style-type: decimal;
 }
 
 .ai-message .message-content li {
-	margin: 8px 0;
-	position: relative;
-	padding-left: 1.2rem;
-	line-height: 1.8;
+	margin: 6px 0;
+	line-height: 1.7;
 }
 
 .ai-message .message-content li::before {
-	content: "•";
-	position: absolute;
-	left: 0;
-	top: 0;
-	color: var(--text-sub);
-	font-weight: bold;
+	content: none;
 }
 
 .ai-message .message-content li>p {
 	margin: 0;
+}
+
+.ai-message .message-content hr {
+	border: none;
+	border-top: 1px solid var(--border);
+	margin: 16px 0;
 }
 
 .ai-message .message-content blockquote {
@@ -955,8 +983,32 @@ body {
 	padding: 16px;
 	overflow-x: auto;
 	background: transparent;
+	font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
 	font-size: 0.9rem;
 	line-height: 1.5;
+}
+
+.ai-message .message-content .katex {
+	color: var(--text-main);
+	font-size: 1.02em;
+}
+
+.ai-message .message-content .katex-display {
+	margin: 6px 0;
+	padding: 0;
+	width: auto;
+	max-width: 100%;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	overflow-x: auto;
+	overflow-y: hidden;
+	text-align: left;
+}
+
+[data-theme="dark"] .ai-message .message-content .katex-display {
+	border: none;
+	background: transparent;
 }
 
 /* Thinking Indicator */

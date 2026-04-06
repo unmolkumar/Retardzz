@@ -115,6 +115,7 @@ const commandMenuState = {
 	highlightedIndex: 0,
 	selectedQuizMode: "visual",
 	pendingCommandId: null,
+	suppressedCommandToken: null,
 };
 
 // Helper to update title bar visibility (desktop + mobile)
@@ -5488,6 +5489,35 @@ function resetCommandMenuState() {
 	commandMenuState.pendingCommandId = null;
 }
 
+function resolveCommandIdFromKey(commandKey) {
+	const normalizedCommand = String(commandKey || "").toLowerCase();
+	if (normalizedCommand === "q" || normalizedCommand.startsWith("quiz")) {
+		return "quiz";
+	}
+	if (
+		normalizedCommand === "f" ||
+		normalizedCommand.startsWith("flashcard") ||
+		normalizedCommand.startsWith("flashcards")
+	) {
+		return "flashcard";
+	}
+	if (
+		normalizedCommand === "m" ||
+		normalizedCommand.startsWith("mindmap") ||
+		normalizedCommand.startsWith("mind")
+	) {
+		return "mindmap";
+	}
+	return null;
+}
+
+function commandTokenFromId(commandId) {
+	if (commandId === "quiz") return "quiz";
+	if (commandId === "flashcard") return "flashcard";
+	if (commandId === "mindmap") return "mindmap";
+	return null;
+}
+
 function isCommandSuggestionsVisible() {
 	return Boolean(commandSuggestions && !commandSuggestions.hidden && commandMenuState.visible);
 }
@@ -5686,12 +5716,14 @@ function selectHighlightedCommandSuggestion() {
 		}
 
 		commandMenuState.pendingCommandId = selected.id;
+		commandMenuState.suppressedCommandToken = commandTokenFromId(selected.id);
 		closeCommandSuggestions();
 		showToast(`${selected.token} selected. Type topic and send.`);
 		return true;
 	}
 
 	commandMenuState.selectedQuizMode = selected.id;
+	commandMenuState.suppressedCommandToken = "quiz";
 	closeCommandSuggestions();
 	showToast(`${selected.label} selected. Now type quiz topic.`);
 	return true;
@@ -5704,13 +5736,28 @@ function updateCommandSuggestionsFromInput() {
 
 	const candidate = getSlashCandidateFromInput(messageInput.value);
 	if (!candidate) {
+		commandMenuState.suppressedCommandToken = null;
 		closeCommandSuggestions(true);
 		return;
+	}
+
+	if (commandMenuState.suppressedCommandToken) {
+		if (candidate.commandKey === commandMenuState.suppressedCommandToken) {
+			closeCommandSuggestions();
+			return;
+		}
+
+		commandMenuState.suppressedCommandToken = null;
 	}
 
 	if (candidate.commandKey && !candidate.commandKey.startsWith("quiz")) {
 		commandMenuState.selectedQuizMode = "visual";
 		commandMenuState.pendingCommandId = null;
+	}
+
+	if (candidate.topicPart) {
+		closeCommandSuggestions();
+		return;
 	}
 
 	if (commandMenuState.stage === "quiz-modes") {
@@ -5744,23 +5791,7 @@ function parseCommandMessage(rawMessage) {
 		return null;
 	}
 
-	const normalizedCommand = candidate.commandKey.toLowerCase();
-	let commandId = null;
-	if (normalizedCommand === "q" || normalizedCommand.startsWith("quiz")) {
-		commandId = "quiz";
-	} else if (
-		normalizedCommand === "f" ||
-		normalizedCommand.startsWith("flashcard") ||
-		normalizedCommand.startsWith("flashcards")
-	) {
-		commandId = "flashcard";
-	} else if (
-		normalizedCommand === "m" ||
-		normalizedCommand.startsWith("mindmap") ||
-		normalizedCommand.startsWith("mind")
-	) {
-		commandId = "mindmap";
-	}
+	const commandId = resolveCommandIdFromKey(candidate.commandKey);
 
 	if (!commandId) {
 		return null;

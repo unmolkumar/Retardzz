@@ -2,6 +2,7 @@ const API_BASE = 'http://127.0.0.1:8000/api/room';
 const REQUEST_TIMEOUT_MS = 15000;
 const NOTIFICATION_POLL_MS = 20000;
 const STUDY_STATS_POLL_MS = 10000;
+const PRESENCE_PING_MS = 12000;
 const MAX_ACTIVITY_NOTIFICATIONS = 20;
 const STUDY_TIMER_STORAGE_KEY = 'saivo_room_timer_state';
 
@@ -12,22 +13,27 @@ let activeRoomAdmin = '';
 let refreshInterval = null;
 let notificationInterval = null;
 let studyStatsInterval = null;
+let presenceInterval = null;
+let clockInterval = null;
 let roomCache = [];
 let unreadActivityCount = 0;
+let lastHubQuote = '';
 
 const STUDY_MODE_CONFIG = {
-    focus: { label: 'Focus Session', minutes: 25, tracksStudy: true, color: '#ef4444' },
-    short: { label: 'Short Break', minutes: 5, tracksStudy: false, color: '#22c55e' },
-    long: { label: 'Long Break', minutes: 15, tracksStudy: false, color: '#60a5fa' }
+    focus60: { label: 'Deep Focus - 60m', minutes: 60, tracksStudy: true, color: '#ef4444' },
+    focus30: { label: 'Sprint Focus - 30m', minutes: 30, tracksStudy: true, color: '#f97316' },
+    focus15: { label: 'Quick Focus - 15m', minutes: 15, tracksStudy: true, color: '#eab308' },
+    focus5: { label: 'Warmup Focus - 5m', minutes: 5, tracksStudy: true, color: '#22c55e' }
 };
 
 const studyState = {
-    modeKey: 'focus',
-    durationSeconds: STUDY_MODE_CONFIG.focus.minutes * 60,
-    remainingSeconds: STUDY_MODE_CONFIG.focus.minutes * 60,
+    modeKey: 'focus60',
+    durationSeconds: STUDY_MODE_CONFIG.focus60.minutes * 60,
+    remainingSeconds: STUDY_MODE_CONFIG.focus60.minutes * 60,
     timerId: null,
     running: false,
     isLiveStudying: false,
+    liveOwner: '',
     latestMembers: [],
     serverStartedAt: null,
     dateKey: ''
@@ -35,6 +41,7 @@ const studyState = {
 
 const notificationStore = {
     invitations: [],
+    sentInvitations: [],
     requestStatuses: [],
     activity: []
 };
@@ -61,10 +68,14 @@ const ui = {
     mainAiBtn: document.getElementById('main-ai-btn'),
     navCreateBtn: document.getElementById('nav-create-btn'),
     navJoinBtn: document.getElementById('nav-join-btn'),
+    refreshQuoteBtn: document.getElementById('refresh-quote-btn'),
     cancelCreateBtn: document.getElementById('cancel-create-btn'),
     cancelJoinBtn: document.getElementById('cancel-join-btn'),
     roomInfoBtn: document.getElementById('room-info-btn'),
     openManageBtn: document.getElementById('open-manage-btn'),
+    micBtn: document.getElementById('mic-btn'),
+    whiteboardBtn: document.getElementById('whiteboard-btn'),
+    pollBtn: document.getElementById('poll-btn'),
     cancelInviteBtn: document.getElementById('cancel-invite-btn'),
     roomList: document.getElementById('room-list'),
     roomHeaderTitle: document.getElementById('room-header-title'),
@@ -90,6 +101,12 @@ const ui = {
     notificationPanel: document.getElementById('notification-panel'),
     notificationList: document.getElementById('notification-list'),
     notificationRefreshBtn: document.getElementById('notification-refresh-btn'),
+    hubQuoteText: document.getElementById('hub-quote-text'),
+    hubQuoteMeta: document.getElementById('hub-quote-meta'),
+    hubDayLabel: document.getElementById('hub-day-label'),
+    hubTimeLabel: document.getElementById('hub-time-label'),
+    roomDayLabel: document.getElementById('room-day-label'),
+    roomTimeLabel: document.getElementById('room-time-label'),
     studyTabs: Array.from(document.querySelectorAll('.study-tab')),
     studyModeButtons: Array.from(document.querySelectorAll('.study-mode-btn')),
     studyRing: document.getElementById('study-ring'),
@@ -99,7 +116,8 @@ const ui = {
     studyResetBtn: document.getElementById('study-reset-btn'),
     refreshStudyBtn: document.getElementById('refresh-study-btn'),
     studyMemberList: document.getElementById('study-member-list'),
-    studyDateLabel: document.getElementById('studyboard-date-label')
+    studyDateLabel: document.getElementById('studyboard-date-label'),
+    studyboardLiveClock: document.getElementById('studyboard-live-clock')
 };
 
 function showView(viewName) {
@@ -174,6 +192,8 @@ function setStatus(id, message) {
 }
 
 function resetRoomContext() {
+    stopPresenceHeartbeat(true);
+
     activeRoom = null;
     currentInviteCode = '';
     activeRoomAdmin = '';
@@ -194,10 +214,11 @@ function resetRoomContext() {
 
     stopLocalStudyCountdown();
 
-    studyState.modeKey = 'focus';
-    studyState.durationSeconds = STUDY_MODE_CONFIG.focus.minutes * 60;
-    studyState.remainingSeconds = STUDY_MODE_CONFIG.focus.minutes * 60;
+    studyState.modeKey = 'focus60';
+    studyState.durationSeconds = STUDY_MODE_CONFIG.focus60.minutes * 60;
+    studyState.remainingSeconds = STUDY_MODE_CONFIG.focus60.minutes * 60;
     studyState.isLiveStudying = false;
+    studyState.liveOwner = '';
     studyState.latestMembers = [];
     studyState.serverStartedAt = null;
     studyState.dateKey = '';
@@ -250,6 +271,143 @@ function getNetworkErrorMessage(error) {
         return 'Request timed out. Please retry.';
     }
     return 'Cannot reach room server. Ensure backend is running on 127.0.0.1:8000.';
+}
+
+function formatDayLabel(date = new Date()) {
+    return date.toLocaleDateString([], {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric'
+    });
+}
+
+function formatTimeLabel(date = new Date()) {
+    return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+}
+
+function updateClockWidgets() {
+    const now = new Date();
+    const dayText = formatDayLabel(now);
+    const timeText = formatTimeLabel(now);
+
+    if (ui.hubDayLabel) {
+        ui.hubDayLabel.textContent = dayText;
+    }
+    if (ui.hubTimeLabel) {
+        ui.hubTimeLabel.textContent = timeText;
+    }
+    if (ui.roomDayLabel) {
+        ui.roomDayLabel.textContent = dayText;
+    }
+    if (ui.roomTimeLabel) {
+        ui.roomTimeLabel.textContent = timeText;
+    }
+    if (ui.studyboardLiveClock) {
+        ui.studyboardLiveClock.textContent = timeText;
+    }
+}
+
+function startClockTicker() {
+    updateClockWidgets();
+    if (clockInterval) {
+        clearInterval(clockInterval);
+    }
+    clockInterval = setInterval(updateClockWidgets, 1000);
+}
+
+async function refreshHubQuote(showStatus = false) {
+    const fallbackText = 'Small wins stack up faster than motivation spikes.';
+    const fallbackMeta = 'Fallback quote';
+
+    try {
+        const res = await fetchWithTimeout(`${API_BASE}/hub/quote`, { headers: getHeaders() });
+        if (!res.ok) {
+            throw new Error(await getErrorMessage(res, 'Failed to generate quote'));
+        }
+
+        const payload = await res.json();
+        let quote = (payload.quote || '').trim();
+        if (!quote) {
+            quote = fallbackText;
+        }
+
+        if (quote === lastHubQuote) {
+            quote = `${quote} Keep pushing.`;
+        }
+
+        lastHubQuote = quote;
+
+        if (ui.hubQuoteText) {
+            ui.hubQuoteText.textContent = quote;
+        }
+        if (ui.hubQuoteMeta) {
+            const source = payload.source === 'ai' ? 'Groq AI' : 'Fallback';
+            ui.hubQuoteMeta.textContent = `${source} • ${formatTimeLabel(new Date())}`;
+        }
+
+        if (showStatus) {
+            setStatus('hub-status', 'Fresh quote loaded.');
+        }
+    } catch (error) {
+        if (ui.hubQuoteText) {
+            ui.hubQuoteText.textContent = fallbackText;
+        }
+        if (ui.hubQuoteMeta) {
+            ui.hubQuoteMeta.textContent = fallbackMeta;
+        }
+
+        if (showStatus) {
+            setStatus('hub-status', error.message || 'Could not refresh quote right now.');
+        }
+    }
+}
+
+async function pingRoomPresence(markOffline = false, keepalive = false) {
+    if (!activeRoom) {
+        return;
+    }
+
+    const endpoint = markOffline ? 'offline' : 'ping';
+
+    try {
+        await fetchWithTimeout(`${API_BASE}/${activeRoom}/presence/${endpoint}`, {
+            method: 'POST',
+            headers: getHeaders(),
+            keepalive
+        });
+    } catch {
+        // Presence heartbeat is best-effort and should never block UI.
+    }
+}
+
+function startPresenceHeartbeat() {
+    if (!activeRoom) {
+        return;
+    }
+
+    void pingRoomPresence(false);
+    if (presenceInterval) {
+        clearInterval(presenceInterval);
+    }
+
+    presenceInterval = setInterval(() => {
+        void pingRoomPresence(false);
+    }, PRESENCE_PING_MS);
+}
+
+function stopPresenceHeartbeat(sendOffline = true) {
+    if (presenceInterval) {
+        clearInterval(presenceInterval);
+        presenceInterval = null;
+    }
+
+    if (sendOffline && activeRoom) {
+        void pingRoomPresence(true, true);
+    }
 }
 
 async function fetchWithTimeout(url, options = {}) {
@@ -376,7 +534,7 @@ function restoreStudyTimerFromSnapshotForRoom(roomId, allowLiveSnapshot = true) 
         return false;
     }
 
-    const modeKey = STUDY_MODE_CONFIG[snapshot.modeKey] ? snapshot.modeKey : 'focus';
+    const modeKey = STUDY_MODE_CONFIG[snapshot.modeKey] ? snapshot.modeKey : 'focus60';
     const durationSeconds = Number(snapshot.durationSeconds) > 0
         ? Number(snapshot.durationSeconds)
         : STUDY_MODE_CONFIG[modeKey].minutes * 60;
@@ -431,22 +589,13 @@ function formatStudyDuration(totalSeconds) {
 }
 
 function getActiveStudyModeConfig() {
-    return STUDY_MODE_CONFIG[studyState.modeKey] || STUDY_MODE_CONFIG.focus;
+    return STUDY_MODE_CONFIG[studyState.modeKey] || STUDY_MODE_CONFIG.focus60;
 }
 
 function updateStudyModeButtons() {
     ui.studyModeButtons.forEach((button) => {
         const isActive = button.dataset.modeKey === studyState.modeKey;
         button.classList.toggle('active', isActive);
-    });
-
-    ui.studyTabs.forEach((tab) => {
-        if (tab.dataset.mode === 'pomodoro') {
-            tab.classList.toggle('active', ['focus', 'short', 'long'].includes(studyState.modeKey));
-        }
-        if (tab.dataset.mode === 'custom') {
-            tab.classList.toggle('active', false);
-        }
     });
 }
 
@@ -486,8 +635,9 @@ function renderStudyMembers(members) {
     }
 
     if (ui.studyDateLabel) {
-        const suffix = studyState.dateKey ? `Daily totals (${studyState.dateKey})` : 'Daily totals';
-        ui.studyDateLabel.textContent = `See who studied most and who is LIVE right now. ${suffix}.`;
+        const dateText = studyState.dateKey ? `Daily totals (${studyState.dateKey})` : 'Daily totals';
+        const onlineCount = members.filter((member) => member.is_online).length;
+        ui.studyDateLabel.textContent = `${dateText} • ${onlineCount} online • LIVE shown in real time.`;
     }
 
     ui.studyMemberList.innerHTML = '';
@@ -530,7 +680,12 @@ function renderStudyMembers(members) {
         livePill.className = `study-live-pill ${member.is_live ? 'live' : 'offline'}`;
         livePill.textContent = member.is_live ? 'LIVE' : 'Idle';
 
+        const onlinePill = document.createElement('span');
+        onlinePill.className = `study-online-pill ${member.is_online ? 'online' : 'offline'}`;
+        onlinePill.textContent = member.is_online ? 'Online' : 'Offline';
+
         right.appendChild(total);
+        right.appendChild(onlinePill);
         right.appendChild(livePill);
 
         row.appendChild(meta);
@@ -540,13 +695,14 @@ function renderStudyMembers(members) {
 }
 
 async function syncStudySessionFromMembers() {
-    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
-    if (!selfStats || !selfStats.is_live) {
+    const liveMember = studyState.latestMembers.find((entry) => entry.is_live);
+    if (!liveMember) {
+        const hadLiveSession = studyState.isLiveStudying;
         studyState.isLiveStudying = false;
+        studyState.liveOwner = '';
         studyState.serverStartedAt = null;
 
-        const mode = getActiveStudyModeConfig();
-        if (mode.tracksStudy && studyState.running) {
+        if (studyState.running) {
             stopLocalStudyCountdown();
             renderStudyTimerUI();
         }
@@ -555,35 +711,52 @@ async function syncStudySessionFromMembers() {
         if (!restored) {
             renderStudyTimerUI();
         }
+
+        if (hadLiveSession) {
+            setStatus('study-status', 'Shared focus session is currently idle.');
+        }
         return;
     }
 
-    const modeKey = STUDY_MODE_CONFIG[selfStats.active_mode_key] ? selfStats.active_mode_key : 'focus';
-    const targetSeconds = Number(selfStats.active_target_seconds) > 0
-        ? Number(selfStats.active_target_seconds)
+    const modeKey = STUDY_MODE_CONFIG[liveMember.active_mode_key] ? liveMember.active_mode_key : 'focus60';
+    const targetSeconds = Number(liveMember.active_target_seconds) > 0
+        ? Number(liveMember.active_target_seconds)
         : STUDY_MODE_CONFIG[modeKey].minutes * 60;
 
-    const startedAtMs = Date.parse(selfStats.started_at || '');
+    const startedAtMs = Date.parse(liveMember.started_at || '');
     const elapsed = Number.isNaN(startedAtMs)
         ? 0
         : Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
     const remaining = Math.max(0, targetSeconds - elapsed);
 
+    const previousSignature = `${studyState.liveOwner}|${studyState.serverStartedAt || ''}`;
+
     studyState.modeKey = modeKey;
     studyState.durationSeconds = targetSeconds;
     studyState.remainingSeconds = remaining;
     studyState.isLiveStudying = true;
-    studyState.serverStartedAt = selfStats.started_at || null;
+    studyState.liveOwner = liveMember.username;
+    studyState.serverStartedAt = liveMember.started_at || null;
+
+    const currentSignature = `${studyState.liveOwner}|${studyState.serverStartedAt || ''}`;
 
     if (remaining <= 0) {
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Focus session completed while you were away.');
+        await stopLiveStudySession('Shared focus session completed.');
         await loadStudyStats(false);
         return;
     }
 
-    if (!studyState.running) {
+    if (!studyState.running || !studyState.timerId) {
         startLocalStudyCountdown();
+    }
+
+    if (previousSignature !== currentSignature) {
+        if (studyState.liveOwner === currentUser) {
+            setStatus('study-status', 'You started a shared focus session.');
+        } else {
+            setStatus('study-status', `${studyState.liveOwner} started a shared focus session.`);
+        }
     }
 
     renderStudyTimerUI();
@@ -638,14 +811,20 @@ async function startLiveStudySession() {
 
     const payload = await res.json();
     studyState.dateKey = payload.date_key || studyState.dateKey;
-
     studyState.isLiveStudying = true;
-    setStatus('study-status', mode.tracksStudy ? 'Focus session running live.' : `${mode.label} running.`);
+    studyState.liveOwner = currentUser;
+    studyState.serverStartedAt = new Date().toISOString();
+    setStatus('study-status', `${mode.label} started for everyone in this room.`);
     return true;
 }
 
 async function stopLiveStudySession(messageOverride = '') {
-    if (!activeRoom || !studyState.isLiveStudying) {
+    if (!activeRoom) {
+        return true;
+    }
+
+    const hasLiveSession = studyState.isLiveStudying || studyState.latestMembers.some((entry) => entry.is_live);
+    if (!hasLiveSession) {
         return true;
     }
 
@@ -660,6 +839,7 @@ async function stopLiveStudySession(messageOverride = '') {
     }
 
     studyState.isLiveStudying = false;
+    studyState.liveOwner = '';
     studyState.serverStartedAt = null;
 
     const payload = await res.json();
@@ -680,16 +860,14 @@ async function setStudyMode(modeKey) {
 
     if (studyState.running) {
         stopLocalStudyCountdown();
-    }
-
-    const previousMode = getActiveStudyModeConfig();
-    if (previousMode.tracksStudy && studyState.isLiveStudying) {
-        await stopLiveStudySession('Focus session paused.');
+        await stopLiveStudySession('Shared focus session paused for mode switch.');
+        await loadStudyStats(false);
     }
 
     studyState.modeKey = modeKey;
     studyState.durationSeconds = STUDY_MODE_CONFIG[modeKey].minutes * 60;
     studyState.remainingSeconds = studyState.durationSeconds;
+    studyState.liveOwner = '';
     studyState.serverStartedAt = null;
     renderStudyTimerUI();
 }
@@ -709,17 +887,11 @@ function runStudyCountdownTick() {
     stopLocalStudyCountdown();
 
     const mode = getActiveStudyModeConfig();
-    if (mode.tracksStudy) {
-        stopLiveStudySession('Focus session completed. Great work.').then(() => {
-            pushActivityNotification('Focus session complete', 'Your tracked focus session ended successfully.', 'success');
-            loadStudyStats(false);
-            renderStudyTimerUI();
-        });
-        return;
-    }
-
-    setStatus('study-status', `${mode.label} completed.`);
-    renderStudyTimerUI();
+    stopLiveStudySession('Shared focus session completed. Great work.').then(() => {
+        pushActivityNotification('Shared session complete', `${mode.label} ended successfully.`, 'success');
+        loadStudyStats(false);
+        renderStudyTimerUI();
+    });
 }
 
 async function handleStudyToggle() {
@@ -728,30 +900,20 @@ async function handleStudyToggle() {
         return;
     }
 
-    const mode = getActiveStudyModeConfig();
-
     if (studyState.running) {
         stopLocalStudyCountdown();
-        if (mode.tracksStudy) {
-            await stopLiveStudySession('Focus session paused.');
-            await loadStudyStats(false);
-        }
+        await stopLiveStudySession('Shared focus session paused.');
+        await loadStudyStats(false);
         renderStudyTimerUI();
         return;
     }
 
-    if (mode.tracksStudy) {
-        const started = await startLiveStudySession();
-        if (!started) {
-            return;
-        }
-        studyState.serverStartedAt = new Date().toISOString();
+    const started = await startLiveStudySession();
+    if (!started) {
+        return;
     }
 
     startLocalStudyCountdown();
-    if (!mode.tracksStudy) {
-        setStatus('study-status', `${mode.label} running.`);
-    }
     renderStudyTimerUI();
 }
 
@@ -760,13 +922,11 @@ async function handleStudyReset() {
         stopLocalStudyCountdown();
     }
 
-    const mode = getActiveStudyModeConfig();
-    if (mode.tracksStudy) {
-        await stopLiveStudySession('Focus session reset.');
-        await loadStudyStats(false);
-    }
+    await stopLiveStudySession('Shared focus session reset.');
+    await loadStudyStats(false);
 
     studyState.remainingSeconds = studyState.durationSeconds;
+    studyState.liveOwner = '';
     studyState.serverStartedAt = null;
     renderStudyTimerUI();
 }
@@ -812,8 +972,8 @@ function getRoomNameFromCache(roomId, fallback = 'Room') {
 }
 
 function getJoinStatusLabel(status) {
-    if (status === 'approved') {
-        return 'Approved';
+    if (status === 'approved' || status === 'accepted') {
+        return status === 'accepted' ? 'Accepted' : 'Approved';
     }
     if (status === 'rejected') {
         return 'Rejected';
@@ -832,7 +992,7 @@ function getJoinStatusText(status) {
 }
 
 function getJoinStatusClass(status) {
-    if (status === 'approved') {
+    if (status === 'approved' || status === 'accepted') {
         return 'status-approved';
     }
     if (status === 'rejected') {
@@ -858,6 +1018,12 @@ function buildNotificationEntries() {
         payload: invitation
     }));
 
+    const sentInvitationEntries = notificationStore.sentInvitations.map((invitation) => ({
+        type: 'sent-invite',
+        createdAt: invitation.responded_at || invitation.created_at,
+        payload: invitation
+    }));
+
     const requestEntries = notificationStore.requestStatuses.map((request) => ({
         type: 'join-request',
         createdAt: request.reviewed_at || request.created_at,
@@ -871,6 +1037,7 @@ function buildNotificationEntries() {
     }));
 
     return invitationEntries
+        .concat(sentInvitationEntries)
         .concat(requestEntries)
         .concat(activityEntries)
         .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
@@ -959,6 +1126,22 @@ function renderNotifications() {
                     actions.appendChild(openBtn);
                 }
             }
+        } else if (entry.type === 'sent-invite') {
+            const sentInvite = entry.payload;
+            title.textContent = `Invite sent: ${sentInvite.room_name || 'Room'}`;
+
+            if (sentInvite.status === 'accepted') {
+                body.textContent = `${sentInvite.target_username} accepted your invitation.`;
+            } else if (sentInvite.status === 'rejected') {
+                body.textContent = `${sentInvite.target_username} rejected your invitation.`;
+            } else {
+                body.textContent = `Waiting for ${sentInvite.target_username} to respond.`;
+            }
+
+            const statusPill = document.createElement('span');
+            statusPill.className = `notification-status-pill ${getJoinStatusClass(sentInvite.status)}`;
+            statusPill.textContent = getJoinStatusLabel(sentInvite.status);
+            actions.appendChild(statusPill);
         } else {
             const activity = entry.payload;
             title.textContent = activity.title;
@@ -981,7 +1164,8 @@ function renderNotifications() {
 
     const invitationCount = notificationStore.invitations.length;
     const pendingRequestCount = notificationStore.requestStatuses.filter((request) => request.status === 'pending').length;
-    setNotificationBadge(invitationCount + pendingRequestCount + unreadActivityCount);
+    const pendingSentInviteCount = notificationStore.sentInvitations.filter((invite) => invite.status === 'pending').length;
+    setNotificationBadge(invitationCount + pendingRequestCount + pendingSentInviteCount + unreadActivityCount);
 }
 
 function closeNotifications() {
@@ -1249,6 +1433,23 @@ async function fetchPendingInvitations(showErrors = true) {
     }
 }
 
+async function fetchSentInvitations(showErrors = true) {
+    try {
+        const res = await fetchWithTimeout(`${API_BASE}/invitations/sent/me`, { headers: getHeaders() });
+        if (!res.ok) {
+            throw new Error(await getErrorMessage(res, 'Failed to load sent invitations'));
+        }
+
+        const data = await res.json();
+        return data.invitations || [];
+    } catch (error) {
+        if (showErrors) {
+            showError('notification-error', error.message || 'Failed to load sent invitations');
+        }
+        return [];
+    }
+}
+
 async function fetchMyJoinRequestStatuses(showErrors = true) {
     try {
         const res = await fetchWithTimeout(`${API_BASE}/join-requests/me`, { headers: getHeaders() });
@@ -1271,12 +1472,14 @@ async function refreshNotifications(showErrors = true) {
         clearErrors();
     }
 
-    const [invitations, requestStatuses] = await Promise.all([
+    const [invitations, sentInvitations, requestStatuses] = await Promise.all([
         fetchPendingInvitations(showErrors),
+        fetchSentInvitations(showErrors),
         fetchMyJoinRequestStatuses(showErrors)
     ]);
 
     notificationStore.invitations = invitations;
+    notificationStore.sentInvitations = sentInvitations;
     notificationStore.requestStatuses = requestStatuses;
     renderNotifications();
 }
@@ -1345,7 +1548,7 @@ async function loadMessages() {
             const message = await getErrorMessage(res, 'Failed to load messages');
             if (res.status === 403 || res.status === 404) {
                 resetRoomContext();
-                await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+                await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
                 showView('hub');
                 setStatus('hub-status', message);
                 return;
@@ -1362,9 +1565,14 @@ async function loadMessages() {
 }
 
 async function selectRoom(room) {
-    if (activeRoom && activeRoom !== room.id && studyState.isLiveStudying) {
-        await stopLiveStudySession('Focus session paused while switching rooms.');
+    if (activeRoom && activeRoom !== room.id) {
+        stopPresenceHeartbeat(true);
     }
+
+    stopLocalStudyCountdown();
+    studyState.isLiveStudying = false;
+    studyState.liveOwner = '';
+    studyState.serverStartedAt = null;
 
     activeRoom = room.id;
     currentInviteCode = room.invite_code;
@@ -1381,6 +1589,9 @@ async function selectRoom(room) {
     if (!restoreStudyTimerFromSnapshotForRoom(activeRoom)) {
         renderStudyTimerUI();
     }
+
+    startPresenceHeartbeat();
+
     showView('chat');
     closeMobileSidebar();
 
@@ -1572,7 +1783,6 @@ async function leaveRoom() {
     if (studyState.running) {
         stopLocalStudyCountdown();
     }
-    await stopLiveStudySession('Study session stopped before leaving room.');
 
     clearErrors();
     try {
@@ -1589,7 +1799,7 @@ async function leaveRoom() {
         const data = await res.json();
         clearStudyTimerSnapshot();
         resetRoomContext();
-        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+        await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
         showView('hub');
         setStatus('hub-status', data.message || 'You left the room.');
     } catch (error) {
@@ -1614,7 +1824,6 @@ async function deleteRoom() {
     if (studyState.running) {
         stopLocalStudyCountdown();
     }
-    await stopLiveStudySession('Study session stopped before deleting room.');
 
     clearErrors();
     try {
@@ -1630,7 +1839,7 @@ async function deleteRoom() {
 
         clearStudyTimerSnapshot();
         resetRoomContext();
-        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+        await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
         showView('hub');
         setStatus('hub-status', 'Room deleted successfully.');
     } catch (error) {
@@ -1642,19 +1851,17 @@ ui.sidebarUsername.textContent = currentUser;
 ui.avatarInitials.textContent = getInitials(currentUser);
 
 ui.mainAiBtn.addEventListener('click', () => {
+    stopPresenceHeartbeat(true);
     window.location.href = '../index.html';
 });
 
 ui.hubBtn.addEventListener('click', async () => {
-    if (studyState.running) {
-        stopLocalStudyCountdown();
-    }
     resetRoomContext();
     clearErrors();
     clearStatus();
     closeNotifications();
     showView('hub');
-    await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+    await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
 });
 
 ui.navCreateBtn.addEventListener('click', () => {
@@ -1669,8 +1876,20 @@ ui.navJoinBtn.addEventListener('click', () => {
     showView('join');
 });
 
-ui.cancelCreateBtn.addEventListener('click', () => showView('hub'));
-ui.cancelJoinBtn.addEventListener('click', () => showView('hub'));
+if (ui.refreshQuoteBtn) {
+    ui.refreshQuoteBtn.addEventListener('click', async () => {
+        await refreshHubQuote(true);
+    });
+}
+
+ui.cancelCreateBtn.addEventListener('click', async () => {
+    showView('hub');
+    await refreshHubQuote(false);
+});
+ui.cancelJoinBtn.addEventListener('click', async () => {
+    showView('hub');
+    await refreshHubQuote(false);
+});
 ui.cancelInviteBtn.addEventListener('click', () => showView('chat'));
 
 ui.roomInfoBtn.addEventListener('click', openManageView);
@@ -1680,6 +1899,24 @@ ui.refreshMembersBtn.addEventListener('click', () => loadMembers());
 ui.refreshRequestsBtn.addEventListener('click', () => loadJoinRequests());
 ui.leaveRoomBtn.addEventListener('click', leaveRoom);
 ui.deleteRoomBtn.addEventListener('click', deleteRoom);
+
+if (ui.micBtn) {
+    ui.micBtn.addEventListener('click', () => {
+        setStatus('study-status', 'Mic controls UI added. Voice function will be integrated next.');
+    });
+}
+
+if (ui.whiteboardBtn) {
+    ui.whiteboardBtn.addEventListener('click', () => {
+        setStatus('study-status', 'Whiteboard button is ready. Integration will be plugged in here.');
+    });
+}
+
+if (ui.pollBtn) {
+    ui.pollBtn.addEventListener('click', () => {
+        setStatus('study-status', 'Polls button is ready. Poll logic can be connected next.');
+    });
+}
 
 ui.studyModeButtons.forEach((button) => {
     button.addEventListener('click', async () => {
@@ -1796,7 +2033,7 @@ document.getElementById('submit-join-btn').addEventListener('click', async () =>
         ui.joinCode.value = '';
         showView('hub');
         setStatus('hub-status', data.message || 'Join request sent.');
-        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+        await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
     } catch (error) {
         showError('join-error', getNetworkErrorMessage(error));
     }
@@ -1900,11 +2137,12 @@ window.addEventListener('resize', () => {
 });
 
 window.onload = async () => {
+    startClockTicker();
     closeNotifications();
     renderStudyTimerUI();
     renderStudyMembers([]);
     showView('hub');
-    await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+    await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
 
     if (notificationInterval) {
         clearInterval(notificationInterval);
@@ -1913,3 +2151,17 @@ window.onload = async () => {
         refreshNotifications(false);
     }, NOTIFICATION_POLL_MS);
 };
+
+window.addEventListener('beforeunload', () => {
+    if (!activeRoom) {
+        return;
+    }
+
+    fetch(`${API_BASE}/${activeRoom}/presence/offline`, {
+        method: 'POST',
+        headers: getHeaders(),
+        keepalive: true
+    }).catch(() => {
+        // no-op: page is unloading
+    });
+});

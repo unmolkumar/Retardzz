@@ -1,6 +1,11 @@
+import logging
+import os
+import random
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
+import httpx
 from bson import ObjectId
 from fastapi import HTTPException
 
@@ -14,6 +19,7 @@ MESSAGE_COLLECTION = "study_room_messages"
 INVITATION_COLLECTION = "study_room_invitations"
 JOIN_REQUEST_COLLECTION = "study_room_join_requests"
 STUDY_STATS_COLLECTION = "study_room_study_stats"
+PRESENCE_COLLECTION = "study_room_presence"
 USER_COLLECTION = "users"
 
 # Status values
@@ -23,11 +29,37 @@ STATUS_REJECTED = "rejected"
 STATUS_APPROVED = "approved"
 
 # Study timer values
-VALID_STUDY_MODES = {"focus", "short", "long"}
-DEFAULT_STUDY_MODE = "focus"
+VALID_STUDY_MODES = {"focus60", "focus30", "focus15", "focus5", "focus", "short", "long"}
+MODE_KEY_ALIASES = {
+	"focus": "focus60",
+	"short": "focus5",
+	"long": "focus15",
+}
+MODE_DEFAULT_DURATIONS = {
+	"focus60": 3600,
+	"focus30": 1800,
+	"focus15": 900,
+	"focus5": 300,
+}
+DEFAULT_STUDY_MODE = "focus60"
 MIN_STUDY_DURATION_SECONDS = 60
 MAX_STUDY_DURATION_SECONDS = 14400
-DEFAULT_STUDY_DURATION_SECONDS = 1500
+DEFAULT_STUDY_DURATION_SECONDS = MODE_DEFAULT_DURATIONS[DEFAULT_STUDY_MODE]
+
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+ROOM_QUOTE_MODEL = "llama-3.1-8b-instant"
+ONLINE_GRACE_SECONDS = 35
+
+FALLBACK_ROOM_QUOTES = [
+	"Small wins stack up faster than motivation spikes.",
+	"Consistency beats intensity when the deadline gets close.",
+	"Study in sprints, reflect in pauses, repeat with intent.",
+	"Progress hides inside ordinary focused minutes.",
+	"Clarity grows when distractions lose their vote.",
+	"One honest hour can move a whole week forward.",
+]
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -59,8 +91,11 @@ def _today_key(now: Optional[datetime] = None) -> str:
 
 def _normalize_mode_key(mode_key: Optional[str]) -> str:
 	value = (mode_key or DEFAULT_STUDY_MODE).strip().lower()
+	value = MODE_KEY_ALIASES.get(value, value)
 	if value not in VALID_STUDY_MODES:
 		raise HTTPException(status_code=400, detail="Invalid study mode")
+	if value not in MODE_DEFAULT_DURATIONS:
+		raise HTTPException(status_code=400, detail="Unsupported study mode")
 	return value
 
 
@@ -118,10 +153,46 @@ async def _finalize_live_study_doc(study_stats_coll, stats_doc: dict, now: datet
 	return stats_doc
 
 
-async def _discard_other_live_sessions(study_stats_coll, username: str, now: datetime):
-	live_docs = await study_stats_coll.find({"username": username, "is_live": True}).to_list(length=50)
+async def _discard_live_sessions_in_room(study_stats_coll, room_id: str, now: datetime):
+	live_docs = await study_stats_coll.find({"room_id": room_id, "is_live": True}).to_list(length=100)
 	for live_doc in live_docs:
 		await _finalize_live_study_doc(study_stats_coll, live_doc, now)
+
+
+def _presence_is_online(presence_doc: Optional[dict], now: datetime) -> bool:
+	if not presence_doc:
+		return False
+	if not presence_doc.get("is_online"):
+		return False
+
+	last_seen = presence_doc.get("last_seen_at")
+	if not isinstance(last_seen, datetime):
+		return False
+	if last_seen.tzinfo is None:
+		last_seen = last_seen.replace(tzinfo=timezone.utc)
+
+	return _safe_elapsed_seconds(last_seen, now) <= ONLINE_GRACE_SECONDS
+
+
+def _sanitize_quote(raw_quote: str) -> str:
+	if not raw_quote:
+		return ""
+
+	quote = " ".join(raw_quote.replace("\n", " ").split())
+	quote = re.sub(r'^["\'`]+|["\'`]+$', "", quote)
+	if len(quote) > 180:
+		quote = quote[:180].rsplit(" ", 1)[0].strip()
+		if quote:
+			quote = f"{quote}..."
+	return quote.strip()
+
+
+def _build_fallback_quote_payload(now: datetime) -> dict:
+	return {
+		"quote": random.choice(FALLBACK_ROOM_QUOTES),
+		"source": "fallback",
+		"generated_at": now,
+	}
 
 
 def generate_invite_code(length: int = 8) -> str:
@@ -174,6 +245,64 @@ async def create_room(name: str, description: str, admin_username: str) -> dict:
 	return await get_room_by_id(room_id)
 
 
+async def get_room_hub_quote(username: str) -> dict:
+	"""Generate a fresh quote/fun-fact card for the room hub."""
+	_ = username
+	now = _utcnow()
+	fallback_payload = _build_fallback_quote_payload(now)
+	api_key = os.getenv("GROQ_API_KEY_TITLE") or os.getenv("GROQ_API_KEY")
+
+	if not api_key:
+		return fallback_payload
+
+	style = random.choice(["quote", "fun fact", "focus line"])
+	seed = f"{now.isoformat()}-{random.randint(1000, 9999)}"
+	payload = {
+		"model": ROOM_QUOTE_MODEL,
+		"messages": [
+			{
+				"role": "system",
+				"content": (
+					"You create short motivational study snippets. "
+					"Return exactly one line, plain text, under 20 words. "
+					"No hashtags, no markdown, no numbering."
+				),
+			},
+			{
+				"role": "user",
+				"content": f"Generate one unique {style} for a collaborative study room. Seed: {seed}",
+			},
+		],
+		"temperature": 1.0,
+		"max_tokens": 80,
+	}
+
+	headers = {
+		"Authorization": f"Bearer {api_key}",
+		"Content-Type": "application/json",
+	}
+
+	try:
+		async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+			response = await client.post(GROQ_API_URL, json=payload, headers=headers)
+			response.raise_for_status()
+
+		data = response.json()
+		raw_quote = str(data["choices"][0]["message"]["content"]).strip()
+		quote = _sanitize_quote(raw_quote)
+		if not quote:
+			return fallback_payload
+
+		return {
+			"quote": quote,
+			"source": "ai",
+			"generated_at": now,
+		}
+	except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+		logger.warning("Room quote generation failed: %s", exc)
+		return fallback_payload
+
+
 async def join_room_by_code(invite_code: str, username: str) -> dict:
 	db = await _get_db()
 	rooms_coll = db[ROOM_COLLECTION]
@@ -223,20 +352,39 @@ async def invite_user_by_username(room_id: str, inviter_username: str, target_us
 	members_coll = db[MEMBER_COLLECTION]
 	rooms_coll = db[ROOM_COLLECTION]
 	invitations_coll = db[INVITATION_COLLECTION]
+	users_coll = db[USER_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	inviter_member = await _get_member_doc(members_coll, room_id, inviter_username)
 	await _require_admin(room_doc, inviter_member, inviter_username)
 
-	if inviter_username == target_username:
+	target_clean = target_username.strip()
+	if not target_clean:
+		raise HTTPException(status_code=400, detail="Username is required")
+
+	if inviter_username.lower() == target_clean.lower():
 		raise HTTPException(status_code=400, detail="Admin cannot invite themselves")
 
-	existing_member = await members_coll.find_one({"room_id": room_id, "username": target_username})
+	target_user_doc = await users_coll.find_one({"username": target_clean, "deletion_status": {"$ne": "deleted"}})
+	if not target_user_doc:
+		target_user_doc = await users_coll.find_one(
+			{
+				"username": {"$regex": f"^{re.escape(target_clean)}$", "$options": "i"},
+				"deletion_status": {"$ne": "deleted"},
+			}
+		)
+
+	if not target_user_doc:
+		raise HTTPException(status_code=404, detail=f"User '{target_clean}' not found")
+
+	resolved_target_username = target_user_doc["username"]
+
+	existing_member = await members_coll.find_one({"room_id": room_id, "username": resolved_target_username})
 	if existing_member:
 		raise HTTPException(status_code=400, detail="User is already in this room")
 
 	pending_invite = await invitations_coll.find_one(
-		{"room_id": room_id, "target_username": target_username, "status": STATUS_PENDING}
+		{"room_id": room_id, "target_username": resolved_target_username, "status": STATUS_PENDING}
 	)
 	if pending_invite:
 		raise HTTPException(status_code=400, detail="Invitation already pending for this user")
@@ -244,11 +392,11 @@ async def invite_user_by_username(room_id: str, inviter_username: str, target_us
 	invitation = RoomInvitation.create(
 		room_id=room_id,
 		inviter_username=inviter_username,
-		target_username=target_username,
+		target_username=resolved_target_username,
 	)
 	await invitations_coll.insert_one(invitation.to_document())
 
-	return {"message": f"Invitation sent to {target_username}."}
+	return {"message": f"Invitation sent to {resolved_target_username}."}
 
 
 async def get_pending_invitations(username: str) -> List[dict]:
@@ -258,6 +406,35 @@ async def get_pending_invitations(username: str) -> List[dict]:
 
 	invitations = await invitations_coll.find(
 		{"target_username": username, "status": STATUS_PENDING}
+	).sort("created_at", -1).to_list(length=200)
+
+	if not invitations:
+		return []
+
+	room_ids = [
+		_to_object_id(doc["room_id"], "room id")
+		for doc in invitations
+		if ObjectId.is_valid(doc.get("room_id", ""))
+	]
+	room_docs = await rooms_coll.find({"_id": {"$in": room_ids}}).to_list(length=200)
+	room_map = {str(doc["_id"]): doc.get("name", "Room") for doc in room_docs}
+
+	result = []
+	for invitation in invitations:
+		formatted = _format_invitation_doc(invitation)
+		formatted["room_name"] = room_map.get(formatted["room_id"], "Room")
+		result.append(formatted)
+
+	return result
+
+
+async def get_sent_invitations(username: str) -> List[dict]:
+	db = await _get_db()
+	invitations_coll = db[INVITATION_COLLECTION]
+	rooms_coll = db[ROOM_COLLECTION]
+
+	invitations = await invitations_coll.find(
+		{"inviter_username": username}
 	).sort("created_at", -1).to_list(length=200)
 
 	if not invitations:
@@ -469,11 +646,66 @@ async def get_room_members(room_id: str, username: str) -> List[dict]:
 	return [_format_member_doc(doc) for doc in member_docs]
 
 
+async def ping_room_presence(room_id: str, username: str) -> dict:
+	db = await _get_db()
+	rooms_coll = db[ROOM_COLLECTION]
+	members_coll = db[MEMBER_COLLECTION]
+	presence_coll = db[PRESENCE_COLLECTION]
+
+	await _get_room_doc_or_404(rooms_coll, room_id)
+	await _get_member_doc(members_coll, room_id, username)
+
+	now = _utcnow()
+	await presence_coll.update_one(
+		{"room_id": room_id, "username": username},
+		{
+			"$set": {
+				"room_id": room_id,
+				"username": username,
+				"is_online": True,
+				"last_seen_at": now,
+				"updated_at": now,
+			}
+		},
+		upsert=True,
+	)
+
+	return {"message": "Presence updated."}
+
+
+async def set_room_presence_offline(room_id: str, username: str) -> dict:
+	db = await _get_db()
+	rooms_coll = db[ROOM_COLLECTION]
+	members_coll = db[MEMBER_COLLECTION]
+	presence_coll = db[PRESENCE_COLLECTION]
+
+	await _get_room_doc_or_404(rooms_coll, room_id)
+	await _get_member_doc(members_coll, room_id, username)
+
+	now = _utcnow()
+	await presence_coll.update_one(
+		{"room_id": room_id, "username": username},
+		{
+			"$set": {
+				"room_id": room_id,
+				"username": username,
+				"is_online": False,
+				"last_seen_at": now,
+				"updated_at": now,
+			}
+		},
+		upsert=True,
+	)
+
+	return {"message": "Presence set offline."}
+
+
 async def get_room_study_stats(room_id: str, username: str) -> dict:
 	db = await _get_db()
 	rooms_coll = db[ROOM_COLLECTION]
 	members_coll = db[MEMBER_COLLECTION]
 	study_stats_coll = db[STUDY_STATS_COLLECTION]
+	presence_coll = db[PRESENCE_COLLECTION]
 
 	await _get_room_doc_or_404(rooms_coll, room_id)
 	await _get_member_doc(members_coll, room_id, username)
@@ -483,6 +715,10 @@ async def get_room_study_stats(room_id: str, username: str) -> dict:
 
 	member_docs = await members_coll.find({"room_id": room_id}).to_list(length=300)
 	member_usernames = [member_doc["username"] for member_doc in member_docs]
+	presence_docs = await presence_coll.find(
+		{"room_id": room_id, "username": {"$in": member_usernames}}
+	).to_list(length=300)
+	presence_map = {presence_doc["username"]: presence_doc for presence_doc in presence_docs}
 
 	stats_docs = await study_stats_coll.find(
 		{"room_id": room_id, "date_key": today_key, "username": {"$in": member_usernames}}
@@ -493,6 +729,9 @@ async def get_room_study_stats(room_id: str, username: str) -> dict:
 	for member_doc in member_docs:
 		member_username = member_doc["username"]
 		stats_doc = stats_map.get(member_username)
+		presence_doc = presence_map.get(member_username)
+		last_seen_at = presence_doc.get("last_seen_at") if presence_doc else None
+		is_online = _presence_is_online(presence_doc, now)
 
 		if not stats_doc:
 			result.append(
@@ -500,10 +739,12 @@ async def get_room_study_stats(room_id: str, username: str) -> dict:
 					"username": member_username,
 					"total_seconds": 0,
 					"is_live": False,
+					"is_online": is_online,
 					"date_key": today_key,
 					"started_at": None,
 					"active_mode_key": None,
 					"active_target_seconds": None,
+					"last_seen_at": last_seen_at,
 					"updated_at": None,
 				}
 			)
@@ -525,20 +766,24 @@ async def get_room_study_stats(room_id: str, username: str) -> dict:
 			else:
 				total_seconds += elapsed
 
+		is_online = is_online or is_live
+
 		result.append(
 			{
 				"username": member_username,
 				"total_seconds": total_seconds,
 				"is_live": is_live,
+				"is_online": is_online,
 				"date_key": date_key,
 				"started_at": started_at,
 				"active_mode_key": stats_doc.get("active_mode_key"),
 				"active_target_seconds": stats_doc.get("active_target_seconds"),
+				"last_seen_at": last_seen_at,
 				"updated_at": stats_doc.get("updated_at"),
 			}
 		)
 
-	result.sort(key=lambda item: (not item["is_live"], -item["total_seconds"], item["username"]))
+	result.sort(key=lambda item: (not item["is_online"], not item["is_live"], -item["total_seconds"], item["username"]))
 	live_count = sum(1 for entry in result if entry["is_live"])
 
 	return {"members": result, "live_count": live_count, "date_key": today_key}
@@ -548,7 +793,7 @@ async def start_study_session(
 	room_id: str,
 	username: str,
 	mode_key: str = DEFAULT_STUDY_MODE,
-	duration_seconds: int = DEFAULT_STUDY_DURATION_SECONDS,
+	duration_seconds: Optional[int] = None,
 ) -> dict:
 	db = await _get_db()
 	rooms_coll = db[ROOM_COLLECTION]
@@ -559,12 +804,15 @@ async def start_study_session(
 	await _get_member_doc(members_coll, room_id, username)
 
 	mode_value = _normalize_mode_key(mode_key)
-	duration_value = _normalize_duration_seconds(duration_seconds)
+	if duration_seconds is None:
+		duration_value = MODE_DEFAULT_DURATIONS[mode_value]
+	else:
+		duration_value = _normalize_duration_seconds(duration_seconds)
 
 	now = _utcnow()
 	today_key = _today_key(now)
 
-	await _discard_other_live_sessions(study_stats_coll, username, now)
+	await _discard_live_sessions_in_room(study_stats_coll, room_id, now)
 
 	stats_doc = await study_stats_coll.find_one({"room_id": room_id, "username": username, "date_key": today_key})
 	if not stats_doc:
@@ -623,7 +871,7 @@ async def stop_study_session(room_id: str, username: str) -> dict:
 	today_key = _today_key(now)
 
 	stats_doc = await study_stats_coll.find_one(
-		{"room_id": room_id, "username": username, "is_live": True},
+		{"room_id": room_id, "is_live": True},
 		sort=[("updated_at", -1)],
 	)
 	if not stats_doc:
@@ -655,6 +903,7 @@ async def remove_member_from_room(room_id: str, admin_username: str, target_user
 	invitations_coll = db[INVITATION_COLLECTION]
 	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
 	study_stats_coll = db[STUDY_STATS_COLLECTION]
+	presence_coll = db[PRESENCE_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	admin_member_doc = await _get_member_doc(members_coll, room_id, admin_username)
@@ -680,6 +929,7 @@ async def remove_member_from_room(room_id: str, admin_username: str, target_user
 		{"$set": {"status": STATUS_REJECTED, "reviewed_at": _utcnow(), "reviewed_by": admin_username}},
 	)
 	await study_stats_coll.delete_many({"room_id": room_id, "username": target_username})
+	await presence_coll.delete_many({"room_id": room_id, "username": target_username})
 
 	return {"message": f"Removed {target_username} from room."}
 
@@ -691,6 +941,7 @@ async def leave_room(room_id: str, username: str) -> dict:
 	invitations_coll = db[INVITATION_COLLECTION]
 	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
 	study_stats_coll = db[STUDY_STATS_COLLECTION]
+	presence_coll = db[PRESENCE_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	member_doc = await _get_member_doc(members_coll, room_id, username)
@@ -709,6 +960,7 @@ async def leave_room(room_id: str, username: str) -> dict:
 		{"$set": {"status": STATUS_REJECTED, "reviewed_at": _utcnow(), "reviewed_by": "self-left"}},
 	)
 	await study_stats_coll.delete_many({"room_id": room_id, "username": username})
+	await presence_coll.delete_many({"room_id": room_id, "username": username})
 
 	return {"message": "You left the room.", "room_deleted": False, "new_admin_username": None}
 
@@ -721,6 +973,7 @@ async def delete_room(room_id: str, admin_username: str) -> dict:
 	invitations_coll = db[INVITATION_COLLECTION]
 	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
 	study_stats_coll = db[STUDY_STATS_COLLECTION]
+	presence_coll = db[PRESENCE_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	admin_member_doc = await _get_member_doc(members_coll, room_id, admin_username)
@@ -732,6 +985,7 @@ async def delete_room(room_id: str, admin_username: str) -> dict:
 	await invitations_coll.delete_many({"room_id": room_id})
 	await join_requests_coll.delete_many({"room_id": room_id})
 	await study_stats_coll.delete_many({"room_id": room_id})
+	await presence_coll.delete_many({"room_id": room_id})
 
 	return {"message": "Room deleted successfully."}
 

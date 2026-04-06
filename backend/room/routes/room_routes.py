@@ -3,18 +3,19 @@ from typing import Optional, List
 from ..schemas import (
 	RoomCreateRequest, RoomJoinRequest, RoomJoinRequestResponse, RoomInviteRequest,
 	RoomRemoveMemberRequest, RoomResponse, RoomListResponse,
-	RoomActionResponse, RoomInvitationListResponse, RoomJoinApprovalListResponse,
+	RoomActionResponse, RoomInvitationListResponse, RoomSentInvitationListResponse, RoomJoinApprovalListResponse,
 	RoomJoinRequestStatusListResponse,
-	RoomStudyStartRequest, RoomStudyActionResponse, RoomStudyStatsResponse,
+	RoomStudyStartRequest, RoomStudyActionResponse, RoomStudyStatsResponse, RoomHubQuoteResponse,
 	LeaveRoomResponse,
 	MessageCreateRequest, MessageResponse, MessageListResponse,
 	MemberListResponse
 )
 from ..services import (
 	create_room, join_room_by_code, invite_user_by_username,
-	get_pending_invitations, accept_invitation, reject_invitation,
+	get_pending_invitations, get_sent_invitations, accept_invitation, reject_invitation,
 	get_join_requests, get_my_join_request_statuses, approve_join_request, reject_join_request,
 	get_room_by_id, get_rooms_for_user, send_message, get_messages,
+	get_room_hub_quote, ping_room_presence, set_room_presence_offline,
 	get_room_members, get_room_study_stats, start_study_session, stop_study_session,
 	remove_member_from_room, leave_room, delete_room
 )
@@ -39,6 +40,12 @@ async def api_join_room(req: RoomJoinRequest, x_username: str = Depends(get_curr
 	result = await join_room_by_code(req.invite_code, x_username)
 	return result
 
+
+@router.get("/hub/quote", response_model=RoomHubQuoteResponse)
+async def api_get_hub_quote(x_username: str = Depends(get_current_user)):
+	"""Returns a generated quote or fun fact for room hub UI."""
+	return await get_room_hub_quote(x_username)
+
 @router.post("/{room_id}/invite", response_model=RoomActionResponse)
 async def api_invite_user(room_id: str, req: RoomInviteRequest, x_username: str = Depends(get_current_user)):
 	"""Sends an invitation to a user. User must accept to join."""
@@ -53,6 +60,13 @@ async def api_invite_user(room_id: str, req: RoomInviteRequest, x_username: str 
 async def api_get_my_invitations(x_username: str = Depends(get_current_user)):
 	"""Returns pending invitations for the current user."""
 	invitations = await get_pending_invitations(x_username)
+	return {"invitations": invitations}
+
+
+@router.get("/invitations/sent/me", response_model=RoomSentInvitationListResponse)
+async def api_get_sent_invitations(x_username: str = Depends(get_current_user)):
+	"""Returns invitations sent by current user with latest status."""
+	invitations = await get_sent_invitations(x_username)
 	return {"invitations": invitations}
 
 @router.post("/invitations/{invitation_id}/accept", response_model=RoomActionResponse)
@@ -96,6 +110,18 @@ async def api_get_members(room_id: str, x_username: str = Depends(get_current_us
 	"""Lists all members of a room for current user."""
 	members = await get_room_members(room_id, x_username)
 	return {"members": members}
+
+
+@router.post("/{room_id}/presence/ping", response_model=RoomActionResponse)
+async def api_ping_presence(room_id: str, x_username: str = Depends(get_current_user)):
+	"""Marks a room member as online and refreshes their heartbeat."""
+	return await ping_room_presence(room_id, x_username)
+
+
+@router.post("/{room_id}/presence/offline", response_model=RoomActionResponse)
+async def api_set_presence_offline(room_id: str, x_username: str = Depends(get_current_user)):
+	"""Marks current member as offline in a room presence board."""
+	return await set_room_presence_offline(room_id, x_username)
 
 
 @router.get("/{room_id}/study/stats", response_model=RoomStudyStatsResponse)

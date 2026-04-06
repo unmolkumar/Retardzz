@@ -51,6 +51,22 @@ class RoomInvitationResponse(BaseModel):
 class RoomInvitationListResponse(BaseModel):
 	invitations: List[RoomInvitationResponse]
 
+
+class RoomSentInvitationResponse(BaseModel):
+	id: str
+	room_id: str
+	room_name: str
+	target_username: str
+	status: str
+	created_at: datetime
+	responded_at: Optional[datetime] = None
+
+	model_config = ConfigDict(from_attributes=True)
+
+
+class RoomSentInvitationListResponse(BaseModel):
+	invitations: List[RoomSentInvitationResponse]
+
 class RoomJoinApprovalResponse(BaseModel):
 	id: str
 	room_id: str
@@ -80,18 +96,20 @@ class RoomJoinRequestStatusListResponse(BaseModel):
 
 
 class RoomStudyStartRequest(BaseModel):
-	mode_key: str = Field(default="focus", min_length=1, max_length=30)
-	duration_seconds: int = Field(default=1500, ge=60, le=14400)
+	mode_key: str = Field(default="focus60", min_length=1, max_length=30)
+	duration_seconds: int = Field(default=3600, ge=60, le=14400)
 
 
 class RoomStudyMemberResponse(BaseModel):
 	username: str
 	total_seconds: int
 	is_live: bool
+	is_online: bool = False
 	date_key: str
 	started_at: Optional[datetime] = None
 	active_mode_key: Optional[str] = None
 	active_target_seconds: Optional[int] = None
+	last_seen_at: Optional[datetime] = None
 	updated_at: Optional[datetime] = None
 
 	model_config = ConfigDict(from_attributes=True)
@@ -108,6 +126,12 @@ class RoomStudyActionResponse(BaseModel):
 	total_seconds: int
 	is_live: bool
 	date_key: str
+
+
+class RoomHubQuoteResponse(BaseModel):
+	quote: str
+	source: str
+	generated_at: datetime
 
 class LeaveRoomResponse(BaseModel):
 	message: str

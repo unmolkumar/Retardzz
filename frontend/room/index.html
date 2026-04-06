@@ -105,37 +105,52 @@
 
 		<div class="chat-area" id="chatArea">
 			<div class="room-view room-hub-view" id="view-hub">
-				<div class="room-hub-layout">
-					<div class="room-hero-card">
+				<div class="hub-navbar-shell">
+					<div class="hub-navbar">
+						<button class="hub-nav-btn hub-nav-btn-primary" id="nav-create-btn">Create Room</button>
+						<button class="hub-nav-btn" id="nav-join-btn">Join with Code</button>
+						<button class="hub-nav-btn" id="refresh-quote-btn">New Quote</button>
+					</div>
+				</div>
+
+				<div class="room-hub-layout room-hub-layout-wide">
+					<section class="room-hero-card hub-quote-card">
 						<div class="welcome-logo">
 							<img src="../assets/logo.png" alt="Saivo Logo">
 						</div>
 						<h1>Study Room Hub</h1>
-						<p class="room-hub-description">Focused rooms, zero chaos. Create private study circles and manage access cleanly.</p>
-						<div class="room-hero-actions">
-							<button class="primary-btn" id="nav-create-btn">Create Room</button>
-							<button class="secondary-btn" id="nav-join-btn">Request to Join</button>
-						</div>
+						<p class="room-hub-description">Focused rooms, clean collaboration, and one shared timer rhythm for the whole room.</p>
+						<blockquote class="hub-quote-text" id="hub-quote-text">Loading fresh quote...</blockquote>
+						<p class="hub-quote-meta" id="hub-quote-meta">Powered by Groq title API</p>
 						<div id="hub-status" class="form-helper"></div>
-					</div>
+					</section>
+
+					<section class="room-card hub-clock-card">
+						<div class="room-card-header">
+							<h2>Today in Your Zone</h2>
+						</div>
+						<div class="hub-day-label" id="hub-day-label">--</div>
+						<div class="hub-time-label" id="hub-time-label">--:--:--</div>
+						<p class="room-card-subtitle">Stay aligned with your local day and time while coordinating room sessions.</p>
+					</section>
 
 					<section class="room-card room-signals-card">
 						<div class="room-card-header">
 							<h2>Room Signals</h2>
 						</div>
-						<p class="room-card-subtitle">Track invites and join-request updates from the bell icon in the top-right.</p>
+						<p class="room-card-subtitle">Bell notifications now include incoming invites, your join-request status, and invites you have sent.</p>
 						<div class="signal-list">
 							<div class="signal-item">
 								<span class="signal-dot signal-dot-green"></span>
-								<span>Invitations can be accepted directly from notifications.</span>
+								<span>Accept invitations directly in notifications.</span>
 							</div>
 							<div class="signal-item">
 								<span class="signal-dot signal-dot-blue"></span>
-								<span>Join requests show pending, approved, and rejected states.</span>
+								<span>Track pending and reviewed join requests from one feed.</span>
 							</div>
 							<div class="signal-item">
 								<span class="signal-dot signal-dot-orange"></span>
-								<span>Admins can remove room members from Manage Room.</span>
+								<span>See invite delivery statuses for users you invited.</span>
 							</div>
 						</div>
 					</section>
@@ -248,36 +263,49 @@
 
 			<div id="view-chat" class="room-view room-chat-view room-hidden">
 				<div class="room-chat-toolbar">
-					<span class="room-chat-badge">Live Room Chat</span>
-					<button class="secondary-btn small-btn" id="open-manage-btn">Manage Room</button>
+					<div class="room-chat-toolbar-left">
+						<span class="room-chat-badge">Live Room Chat</span>
+						<div class="room-now-chip">
+							<span class="room-now-day" id="room-day-label">--</span>
+							<span class="room-now-time" id="room-time-label">--:--:--</span>
+						</div>
+					</div>
+					<div class="room-chat-toolbar-right">
+						<button class="toolbar-icon-btn" id="mic-btn" type="button" title="Voice controls coming soon">
+							<ion-icon name="mic-outline"></ion-icon>
+							<span>Mic</span>
+						</button>
+						<button class="toolbar-icon-btn" id="whiteboard-btn" type="button" title="Whiteboard integration coming soon">
+							<ion-icon name="easel-outline"></ion-icon>
+							<span>Whiteboard</span>
+						</button>
+						<button class="toolbar-icon-btn" id="poll-btn" type="button" title="Polls coming soon">
+							<ion-icon name="stats-chart-outline"></ion-icon>
+							<span>Polls</span>
+						</button>
+						<button class="secondary-btn small-btn" id="open-manage-btn">Manage Room</button>
+					</div>
 				</div>
 
 				<div class="study-stage">
 					<aside class="study-modes-card">
-						<div class="study-modes-tabs">
-							<button class="study-tab active" type="button" data-mode="focus">Pomodoro</button>
-							<button class="study-tab" type="button" data-mode="custom">Timer</button>
-						</div>
-
 						<div class="study-presets">
-							<button class="study-mode-btn active" type="button" data-mode-key="focus" data-minutes="25" data-tracks-study="true">
-								<span class="study-mode-title">Focus Session</span>
-								<span class="study-mode-sub">25 minutes of study</span>
+							<button class="study-mode-btn active" type="button" data-mode-key="focus60" data-minutes="60" data-tracks-study="true">
+								<span class="study-mode-title">Deep Focus</span>
+								<span class="study-mode-sub">1 hour shared session</span>
 							</button>
-							<button class="study-mode-btn" type="button" data-mode-key="short" data-minutes="5" data-tracks-study="false">
-								<span class="study-mode-title">Short Break</span>
-								<span class="study-mode-sub">5 minutes to recharge</span>
+							<button class="study-mode-btn" type="button" data-mode-key="focus30" data-minutes="30" data-tracks-study="true">
+								<span class="study-mode-title">Sprint Focus</span>
+								<span class="study-mode-sub">30 minute session</span>
 							</button>
-							<button class="study-mode-btn" type="button" data-mode-key="long" data-minutes="15" data-tracks-study="false">
-								<span class="study-mode-title">Long Break</span>
-								<span class="study-mode-sub">15 minutes of rest</span>
+							<button class="study-mode-btn" type="button" data-mode-key="focus15" data-minutes="15" data-tracks-study="true">
+								<span class="study-mode-title">Quick Focus</span>
+								<span class="study-mode-sub">15 minute session</span>
 							</button>
-						</div>
-
-						<div class="study-placeholder-card">
-							<h4>Whiteboard</h4>
-							<p>Your friend is building this. We will plug it in here when code arrives.</p>
-							<button class="secondary-btn small-btn" type="button" disabled>Waiting for whiteboard code</button>
+							<button class="study-mode-btn" type="button" data-mode-key="focus5" data-minutes="5" data-tracks-study="true">
+								<span class="study-mode-title">Warmup Focus</span>
+								<span class="study-mode-sub">5 minute burst</span>
+							</button>
 						</div>
 					</aside>
 
@@ -301,7 +329,8 @@
 							<h3>Room Studyboard</h3>
 							<button class="secondary-btn small-btn" id="refresh-study-btn">Refresh</button>
 						</div>
-						<p class="room-card-subtitle" id="studyboard-date-label">See who studied most and who is LIVE right now.</p>
+						<p class="room-card-subtitle" id="studyboard-date-label">Daily totals with online-first ordering.</p>
+						<div class="studyboard-time-chip" id="studyboard-live-clock">--:--:--</div>
 						<div id="study-member-list" class="study-member-list"></div>
 					</aside>
 				</div>

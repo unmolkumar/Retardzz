@@ -773,6 +773,8 @@ body {
 .ai-message .message-content {
 	color: var(--text-main);
 	line-height: 1.8;
+	text-align: justify;
+	text-justify: inter-word;
 }
 
 .assistant-rich-content {
@@ -992,21 +994,21 @@ body {
 }
 
 .ai-message .message-content .katex-display {
-	margin: 14px auto;
-	padding: 10px 14px;
-	width: fit-content;
+	margin: 6px 0;
+	padding: 0;
+	width: auto;
 	max-width: 100%;
-	border-radius: 14px;
-	border: 1.5px solid rgba(148, 163, 184, 0.34);
-	background: var(--bg-input);
+	border: none;
+	border-radius: 0;
+	background: transparent;
 	overflow-x: auto;
 	overflow-y: hidden;
-	text-align: center;
+	text-align: left;
 }
 
 [data-theme="dark"] .ai-message .message-content .katex-display {
-	border-color: rgba(255, 255, 255, 0.28);
-	background: rgba(255, 255, 255, 0.03);
+	border: none;
+	background: transparent;
 }
 
 /* Thinking Indicator */

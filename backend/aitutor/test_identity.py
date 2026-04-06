@@ -4,12 +4,19 @@ from services.logic_engine import process_logic
 
 def test_identity_responses():
     """Test all identity-related questions."""
+
+    intro_marker = "My name is Saivo"
     
     test_cases = [
+        # Intro / who-are-you tests
+        ("who are you?", intro_marker),
+        ("who are u", intro_marker),
+        ("hey who are u", intro_marker),
+
         # Name tests
-        ("what is your name?", "My name is ChatTutor."),
-        ("what's your name", "My name is ChatTutor."),
-        ("tell me your name", "My name is ChatTutor."),
+        ("what is your name?", "My name is Saivo."),
+        ("what's your name", "My name is Saivo."),
+        ("tell me your name", "My name is Saivo."),
         
         # Nature tests
         ("what are you?", "I'm a Large Language Model designed to assist with information and communication."),

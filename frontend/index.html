@@ -102,6 +102,19 @@
 			</button>
 			<span class="brand-title">Saivo</span>
 
+			<div class="header-subject-controls" id="header-subject-controls">
+				<div class="subject-selector-row" id="subject-selector-row">
+					<label class="subject-label" for="subject-select">Subject</label>
+					<select id="subject-select" class="subject-select" aria-label="Session subject selector">
+						<option value="Anyone">Anyone</option>
+						<option value="Maths">Maths</option>
+						<option value="Physics">Physics</option>
+						<option value="Chemistry">Chemistry</option>
+						<option value="Coding">Coding</option>
+					</select>
+				</div>
+			</div>
+
 			<!-- Mobile Chat Title (expandable, visible only on mobile) -->
 			<div class="mobile-chat-title-wrapper" id="mobile-chat-title-wrapper">
 				<button class="mobile-chat-title-btn" id="mobile-chat-title-btn" aria-expanded="false" title="Expand chat title">
@@ -175,17 +188,6 @@
 
 		<div class="input-container-wrapper">
 			<div class="input-container">
-				<div class="subject-selector-row" id="subject-selector-row">
-					<label class="subject-label" for="subject-select">Subject</label>
-					<select id="subject-select" class="subject-select" aria-label="Session subject selector">
-						<option value="Anyone">Anyone</option>
-						<option value="Maths">Maths</option>
-						<option value="Physics">Physics</option>
-						<option value="Chemistry">Chemistry</option>
-						<option value="Coding">Coding</option>
-					</select>
-				</div>
-
 				<form id="message-form" class="input-bar">
 					<button class="icon-btn" id="upload-btn" type="button" title="Upload File">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"
@@ -196,6 +198,46 @@
 					</button>
 
 					<textarea id="chat-input" rows="1" placeholder="Ask anything..."></textarea>
+
+					<div class="difficulty-picker" id="difficulty-picker">
+						<button class="difficulty-picker-btn" id="difficulty-picker-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Response level">
+							<span class="difficulty-picker-symbol" id="difficulty-picker-symbol">◉</span>
+							<span class="difficulty-picker-label" id="difficulty-picker-label">Neutral</span>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polyline points="6 9 12 15 18 9"></polyline>
+							</svg>
+						</button>
+						<div class="difficulty-popup" id="difficulty-popup" role="menu" aria-label="Difficulty level options">
+							<button class="difficulty-option" type="button" data-level="Neutral" role="menuitem">
+								<span class="difficulty-option-symbol">◉</span>
+								<span class="difficulty-option-text">
+									<span class="difficulty-option-title">Neutral</span>
+									<span class="difficulty-option-desc">Balanced explanation for normal usage.</span>
+								</span>
+							</button>
+							<button class="difficulty-option" type="button" data-level="Beginner" role="menuitem">
+								<span class="difficulty-option-symbol">🌱</span>
+								<span class="difficulty-option-text">
+									<span class="difficulty-option-title">Beginner</span>
+									<span class="difficulty-option-desc">Simple words with clear step-by-step guidance.</span>
+								</span>
+							</button>
+							<button class="difficulty-option" type="button" data-level="Intermediate" role="menuitem">
+								<span class="difficulty-option-symbol">⚙</span>
+								<span class="difficulty-option-text">
+									<span class="difficulty-option-title">Intermediate</span>
+									<span class="difficulty-option-desc">Moderate depth with practical details.</span>
+								</span>
+							</button>
+							<button class="difficulty-option" type="button" data-level="Advanced" role="menuitem">
+								<span class="difficulty-option-symbol">🚀</span>
+								<span class="difficulty-option-text">
+									<span class="difficulty-option-title">Advanced</span>
+									<span class="difficulty-option-desc">Deep technical detail with tradeoffs and edge cases.</span>
+								</span>
+							</button>
+						</div>
+					</div>
 
 					<button class="icon-btn send-btn" id="send-btn" type="submit">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"
@@ -211,17 +253,6 @@
 						</svg>
 					</button>
 				</form>
-
-				<!-- Educational Controls -->
-				<div class="edu-controls" id="edu-controls">
-					<!-- Difficulty Level Selector -->
-					<div class="difficulty-selector" id="difficulty-selector">
-						<button class="diff-btn active" data-level="Neutral" id="diff-neutral" title="Neutral mode">Neutral</button>
-						<button class="diff-btn" data-level="Beginner" id="diff-beginner" title="Beginner level">Beginner</button>
-						<button class="diff-btn" data-level="Intermediate" id="diff-intermediate" title="Intermediate level">Intermediate</button>
-						<button class="diff-btn" data-level="Advanced" id="diff-advanced" title="Advanced level">Advanced</button>
-					</div>
-				</div>
 			</div>
 			<p id="chat-status" class="status"></p>
 		</div>

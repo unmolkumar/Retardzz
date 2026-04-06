@@ -992,10 +992,12 @@ body {
 }
 
 .ai-message .message-content .katex-display {
-	margin: 14px 0;
-	padding: 10px 12px;
-	border-radius: 12px;
-	border: 1px solid var(--border);
+	margin: 14px auto;
+	padding: 10px 14px;
+	width: fit-content;
+	max-width: 100%;
+	border-radius: 14px;
+	border: 1.5px solid rgba(148, 163, 184, 0.34);
 	background: var(--bg-input);
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -1003,7 +1005,7 @@ body {
 }
 
 [data-theme="dark"] .ai-message .message-content .katex-display {
-	border-color: rgba(255, 255, 255, 0.16);
+	border-color: rgba(255, 255, 255, 0.28);
 	background: rgba(255, 255, 255, 0.03);
 }
 

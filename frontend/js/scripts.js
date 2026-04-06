@@ -561,79 +561,30 @@ function parseMarkdownToHtml(markdownText) {
 		return "";
 	}
 
+	// Preserve KaTeX bracket/paren delimiters through markdown parsing.
+	const mathSafeText = sourceText
+		.replace(/\\\[/g, "\\\\[")
+		.replace(/\\\]/g, "\\\\]")
+		.replace(/\\\(/g, "\\\\(")
+		.replace(/\\\)/g, "\\\\)");
+
 	try {
 		if (typeof marked === "undefined") {
 			return "";
 		}
 
 		if (typeof marked.parse === "function") {
-			return marked.parse(sourceText);
+			return marked.parse(mathSafeText);
 		}
 
 		if (typeof marked === "function") {
-			return marked(sourceText);
+			return marked(mathSafeText);
 		}
 	} catch (error) {
 		console.error("Markdown parsing failed:", error);
 	}
 
 	return "";
-}
-
-function countRegexMatches(sourceText, regexPattern) {
-	if (typeof sourceText !== "string" || !sourceText) {
-		return 0;
-	}
-
-	let count = 0;
-	let match = regexPattern.exec(sourceText);
-	while (match) {
-		count += 1;
-		match = regexPattern.exec(sourceText);
-	}
-	return count;
-}
-
-function countSingleDollarMathSegments(sourceText) {
-	if (typeof sourceText !== "string" || !sourceText) {
-		return 0;
-	}
-
-	let count = 0;
-	let index = 0;
-	while (index < sourceText.length) {
-		const start = sourceText.indexOf("$", index);
-		if (start === -1) {
-			break;
-		}
-
-		const prevChar = start > 0 ? sourceText[start - 1] : "";
-		const nextChar = start + 1 < sourceText.length ? sourceText[start + 1] : "";
-		if (prevChar === "\\" || nextChar === "$") {
-			index = start + 1;
-			continue;
-		}
-
-		let end = start + 1;
-		while (end < sourceText.length) {
-			if (
-				sourceText[end] === "$"
-				&& sourceText[end - 1] !== "\\"
-				&& sourceText[end + 1] !== "$"
-			) {
-				count += 1;
-				index = end + 1;
-				break;
-			}
-			end += 1;
-		}
-
-		if (end >= sourceText.length) {
-			break;
-		}
-	}
-
-	return count;
 }
 
 function extractCodeLanguageFromElement(codeElement) {
@@ -724,52 +675,19 @@ function enhanceCodeBlocksWithCopy(targetElement) {
 	});
 }
 
-function renderMathInMessageBubble(targetElement, sourceText = "") {
-	if (!targetElement) {
+function renderMath(element) {
+	if (!element || typeof renderMathInElement !== "function") {
 		return;
 	}
 
-	if (typeof renderMathInElement !== "function") {
-		console.warn("[KaTeX] renderMathInElement not available; skipping math render");
-		return;
-	}
-
-	const mathSource = typeof sourceText === "string" && sourceText
-		? sourceText
-		: (targetElement.textContent || "");
-
-	const inlineParenCount = countRegexMatches(mathSource, /\\\([\s\S]*?\\\)/g);
-	const displayBracketCount = countRegexMatches(mathSource, /\\\[[\s\S]*?\\\]/g);
-	const displayDollarCount = countRegexMatches(mathSource, /\$\$[\s\S]*?\$\$/g);
-	const inlineDollarCount = countSingleDollarMathSegments(mathSource);
-
-	console.log("[KaTeX] Render pass starting", {
-		inlineParenCount,
-		displayBracketCount,
-		displayDollarCount,
-		inlineDollarCount,
+	renderMathInElement(element, {
+		delimiters: [
+			{ left: "$$", right: "$$", display: true },
+			{ left: "$", right: "$", display: false },
+			{ left: "\\[", right: "\\]", display: true },
+			{ left: "\\(", right: "\\)", display: false }
+		]
 	});
-
-	try {
-		renderMathInElement(targetElement, {
-			delimiters: [
-				{ left: "\\(", right: "\\)", display: false },
-				{ left: "\\[", right: "\\]", display: true },
-				{ left: "$$", right: "$$", display: true },
-				{ left: "$", right: "$", display: false },
-			],
-			throwOnError: false,
-			strict: "ignore",
-			ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
-		});
-
-		const renderedMathNodeCount = targetElement.querySelectorAll(".katex").length;
-		console.log("[KaTeX] Render pass complete", {
-			renderedMathNodeCount,
-		});
-	} catch (error) {
-		console.error("KaTeX rendering failed:", error);
-	}
 }
 
 function renderAssistantRichContent(targetElement, rawText) {
@@ -781,13 +699,11 @@ function renderAssistantRichContent(targetElement, rawText) {
 	const markdownHtml = parseMarkdownToHtml(safeText);
 	if (!markdownHtml) {
 		targetElement.textContent = safeText;
-		renderMathInMessageBubble(targetElement, safeText);
 		return;
 	}
 
 	targetElement.innerHTML = markdownHtml;
 	enhanceCodeBlocksWithCopy(targetElement);
-	renderMathInMessageBubble(targetElement, safeText);
 }
 
 // --- WELCOME SCREEN ---
@@ -1338,6 +1254,7 @@ function addTypewriterAnimation(bubble, markdownText) {
 		if (completedNaturally) {
 			console.log("[Render] Typewriter complete. Applying markdown + KaTeX render pass.");
 			renderAssistantRichContent(bubble, renderState.fullResponseText);
+				renderMath(bubble);
 		}
 
 		// CHAT-SCOPED GENERATION: Reset generation state when rendering completes
@@ -1489,6 +1406,14 @@ function appendMessage(message, animate = false) {
 	removeEmptyState();
 	const element = createMessageElement(message, animate);
 	messagesContainer.appendChild(element);
+
+	if (message.role === "assistant" && !animate) {
+		const bubble = element.querySelector(".message-content");
+		if (bubble) {
+			renderMath(bubble);
+		}
+	}
+
 	return element;
 }
 
@@ -1828,6 +1753,10 @@ async function loadMessages() {
 				renderQuizzesAtMessageIndex(quizzesByIndex, messageIndex, null, false);
 				renderFlashcardsAtMessageIndex(flashcardsByIndex, messageIndex, null, false);
 				renderMindmapsAtMessageIndex(mindmapsByIndex, messageIndex, null, false);
+			});
+
+			messagesContainer.querySelectorAll(".ai-message .message-content").forEach((bubble) => {
+				renderMath(bubble);
 			});
 
 			chatArea.scrollTop = chatArea.scrollHeight;

@@ -3093,13 +3093,13 @@ body {
 	Styles for: Difficulty Level Selector, Quiz Cards, Summary Cards
    ============================================================ */
 
-/* --- Educational Controls Container (in header) --- */
+/* --- Educational Controls Container (below input bar) --- */
 .edu-controls {
 	display: flex;
 	align-items: center;
+	justify-content: center;
 	gap: 16px;
-	margin-left: 20px;
-	z-index: 2;
+	margin: 10px 0 0;
 }
 
 /* --- Difficulty Level Selector --- */
@@ -4923,7 +4923,7 @@ body.quiz-modal-open {
 @media (min-width: 769px) and (max-width: 1100px) {
 	.edu-controls {
 		gap: 8px;
-		margin-left: 12px;
+		margin-top: 10px;
 	}
 
 	.diff-btn {

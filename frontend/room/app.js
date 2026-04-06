@@ -295,13 +295,12 @@ function parseServerTimestamp(value) {
         return Number.NaN;
     }
 
-    const direct = Date.parse(value);
-    if (!Number.isNaN(direct)) {
-        return direct;
-    }
+    const normalized = value.replace(' ', 'T').trim();
+    const hasTimezone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(normalized);
 
-    const normalized = `${value.replace(' ', 'T')}Z`;
-    return Date.parse(normalized);
+    // Backend may return naive timestamps; treat them as UTC to avoid false elapsed spikes.
+    const candidate = hasTimezone ? normalized : `${normalized}Z`;
+    return Date.parse(candidate);
 }
 
 function updateClockWidgets() {

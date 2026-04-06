@@ -31,6 +31,11 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("user-joined", { userId, socketId: socket.id });
   });
 
+  // -- Member 3: POMODORO TIMER SYNC --
+  socket.on("timer:state-change", (data) => {
+    socket.to(data.roomId).emit("timer:sync", data);
+  });
+
   // -- Member 3: WEBRTC SIGNALING (Voice) --
   socket.on("voice-offer", ({ offer, to }) => {
     socket.to(to).emit("voice-offer", { offer, from: socket.id });

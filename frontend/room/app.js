@@ -394,10 +394,17 @@ function openWhiteboardForActiveRoom() {
     }
 
     const whiteboardUrl = getWhiteboardRoomUrl(activeRoom);
-    const newWindow = window.open(whiteboardUrl, '_blank', 'noopener,noreferrer');
+    const newWindow = window.open(whiteboardUrl, '_blank');
     if (!newWindow) {
         window.location.href = whiteboardUrl;
         return;
+    }
+
+    // Keep tab-open behavior secure while avoiding duplicate navigation.
+    try {
+        newWindow.opener = null;
+    } catch {
+        // Ignore cross-window hardening errors in restrictive browser modes.
     }
 
     setStatus('study-status', `Opened whiteboard for room ${activeRoom}.`);

@@ -2,7 +2,6 @@
 
 import { useMemo } from "react";
 import { RoomProvider } from "../../liveblocks.config";
-import { ClientSideSuspense } from "@liveblocks/react";
 import Editor from "./Editor";
 import Cursors from "./Cursors";
 
@@ -51,10 +50,8 @@ export default function CollaborativeCanvas({ roomId, username = "", roomName = 
         color: presenceColor,
       }}
     >
-      <ClientSideSuspense fallback={<div>Loading Room...</div>}>
-        <Cursors />
-        <Editor roomId={roomId} roomName={roomName} username={resolvedUsername} />
-      </ClientSideSuspense>
+      <Cursors />
+      <Editor roomId={roomId} roomName={roomName} username={resolvedUsername} />
     </RoomProvider>
   );
 }

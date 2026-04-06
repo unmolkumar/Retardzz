@@ -64,6 +64,20 @@ class RoomJoinApprovalResponse(BaseModel):
 class RoomJoinApprovalListResponse(BaseModel):
 	requests: List[RoomJoinApprovalResponse]
 
+class RoomJoinRequestStatusResponse(BaseModel):
+	id: str
+	room_id: str
+	room_name: str
+	status: str
+	created_at: datetime
+	reviewed_at: Optional[datetime] = None
+	reviewed_by: Optional[str] = None
+
+	model_config = ConfigDict(from_attributes=True)
+
+class RoomJoinRequestStatusListResponse(BaseModel):
+	requests: List[RoomJoinRequestStatusResponse]
+
 class LeaveRoomResponse(BaseModel):
 	message: str
 	room_deleted: bool = False

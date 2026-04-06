@@ -1,11 +1,19 @@
 const API_BASE = 'http://127.0.0.1:8000/api/room';
 const REQUEST_TIMEOUT_MS = 15000;
+const NOTIFICATION_POLL_MS = 20000;
 
 let currentUser = localStorage.getItem('username');
 let activeRoom = null;
 let currentInviteCode = '';
 let activeRoomAdmin = '';
 let refreshInterval = null;
+let notificationInterval = null;
+let roomCache = [];
+
+const notificationStore = {
+    invitations: [],
+    requestStatuses: []
+};
 
 if (!currentUser) {
     window.location.href = '../login.html';
@@ -51,10 +59,13 @@ const ui = {
     memberListPanel: document.getElementById('member-list-panel'),
     leaveRoomBtn: document.getElementById('leave-room-btn'),
     deleteRoomBtn: document.getElementById('delete-room-btn'),
-    refreshInvitationsBtn: document.getElementById('refresh-invitations-btn'),
-    pendingInvitationsList: document.getElementById('pending-invitations-list'),
     refreshRequestsBtn: document.getElementById('refresh-requests-btn'),
-    joinRequestList: document.getElementById('join-request-list')
+    joinRequestList: document.getElementById('join-request-list'),
+    notificationBtn: document.getElementById('notification-btn'),
+    notificationBadge: document.getElementById('notification-badge'),
+    notificationPanel: document.getElementById('notification-panel'),
+    notificationList: document.getElementById('notification-list'),
+    notificationRefreshBtn: document.getElementById('notification-refresh-btn')
 };
 
 function showView(viewName) {
@@ -87,11 +98,13 @@ function clearStatus() {
         'room-action-note'
     ].forEach((id) => {
         const el = document.getElementById(id);
-        if (el) {
-            el.textContent = '';
-            if (el.classList.contains('form-error')) {
-                el.style.display = 'none';
-            }
+        if (!el) {
+            return;
+        }
+
+        el.textContent = '';
+        if (el.classList.contains('form-error')) {
+            el.style.display = 'none';
         }
     });
 }
@@ -129,6 +142,7 @@ function resetRoomContext() {
     activeRoom = null;
     currentInviteCode = '';
     activeRoomAdmin = '';
+
     ui.roomHeaderTitle.textContent = '';
     ui.roomInfoBtn.style.display = 'none';
     ui.sendMsgBtn.disabled = true;
@@ -149,6 +163,34 @@ function getInitials(name) {
 
 function formatMessageTime(timestamp) {
     return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatRelativeTime(timestamp) {
+    if (!timestamp) {
+        return 'just now';
+    }
+
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+        return 'just now';
+    }
+
+    const diffMs = Date.now() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) {
+        return 'just now';
+    }
+    if (diffMins < 60) {
+        return `${diffMins}m ago`;
+    }
+
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) {
+        return `${diffHours}h ago`;
+    }
+
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
 }
 
 function getNetworkErrorMessage(error) {
@@ -219,6 +261,200 @@ function closeMobileSidebar() {
     document.body.classList.remove('sidebar-open');
 }
 
+function setNotificationBadge(count) {
+    if (!ui.notificationBadge) {
+        return;
+    }
+
+    if (!count) {
+        ui.notificationBadge.classList.add('room-hidden');
+        ui.notificationBadge.textContent = '0';
+        return;
+    }
+
+    ui.notificationBadge.textContent = String(count > 99 ? '99+' : count);
+    ui.notificationBadge.classList.remove('room-hidden');
+}
+
+function getRoomNameFromCache(roomId, fallback = 'Room') {
+    const room = roomCache.find((candidate) => candidate.id === roomId);
+    if (!room) {
+        return fallback;
+    }
+    return room.name;
+}
+
+function getJoinStatusLabel(status) {
+    if (status === 'approved') {
+        return 'Approved';
+    }
+    if (status === 'rejected') {
+        return 'Rejected';
+    }
+    return 'Pending';
+}
+
+function getJoinStatusText(status) {
+    if (status === 'approved') {
+        return 'Request accepted. You can open the room now.';
+    }
+    if (status === 'rejected') {
+        return 'Request was rejected by room admin.';
+    }
+    return 'Waiting for admin approval.';
+}
+
+function getJoinStatusClass(status) {
+    if (status === 'approved') {
+        return 'status-approved';
+    }
+    if (status === 'rejected') {
+        return 'status-rejected';
+    }
+    return 'status-pending';
+}
+
+function buildNotificationEntries() {
+    const invitationEntries = notificationStore.invitations.map((invitation) => ({
+        type: 'invitation',
+        createdAt: invitation.created_at,
+        payload: invitation
+    }));
+
+    const requestEntries = notificationStore.requestStatuses.map((request) => ({
+        type: 'join-request',
+        createdAt: request.reviewed_at || request.created_at,
+        payload: request
+    }));
+
+    return invitationEntries
+        .concat(requestEntries)
+        .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+        .slice(0, 40);
+}
+
+function renderNotifications() {
+    if (!ui.notificationList) {
+        return;
+    }
+
+    ui.notificationList.innerHTML = '';
+
+    const entries = buildNotificationEntries();
+    if (!entries.length) {
+        ui.notificationList.innerHTML = '<div class="notification-empty">No updates right now.</div>';
+        setNotificationBadge(0);
+        return;
+    }
+
+    entries.forEach((entry) => {
+        const item = document.createElement('div');
+        item.className = 'notification-item';
+
+        const top = document.createElement('div');
+        top.className = 'notification-top';
+
+        const title = document.createElement('h4');
+        title.className = 'notification-title';
+
+        const meta = document.createElement('span');
+        meta.className = 'notification-time';
+        meta.textContent = formatRelativeTime(entry.createdAt);
+
+        const body = document.createElement('p');
+        body.className = 'notification-body';
+
+        const actions = document.createElement('div');
+        actions.className = 'notification-actions';
+
+        if (entry.type === 'invitation') {
+            const invitation = entry.payload;
+            title.textContent = `Invitation: ${invitation.room_name}`;
+            body.textContent = `Invited by ${invitation.inviter_username}. Accept to join now.`;
+
+            const acceptBtn = document.createElement('button');
+            acceptBtn.type = 'button';
+            acceptBtn.className = 'mini-action-btn accept';
+            acceptBtn.textContent = 'Accept';
+            acceptBtn.addEventListener('click', () => {
+                acceptInvitation(invitation.id);
+            });
+
+            const rejectBtn = document.createElement('button');
+            rejectBtn.type = 'button';
+            rejectBtn.className = 'mini-action-btn reject';
+            rejectBtn.textContent = 'Reject';
+            rejectBtn.addEventListener('click', () => {
+                rejectInvitation(invitation.id);
+            });
+
+            actions.appendChild(acceptBtn);
+            actions.appendChild(rejectBtn);
+        } else {
+            const request = entry.payload;
+            const roomName = request.room_name || getRoomNameFromCache(request.room_id, 'Room');
+            title.textContent = `Request: ${roomName}`;
+            body.textContent = getJoinStatusText(request.status);
+
+            const statusPill = document.createElement('span');
+            statusPill.className = `notification-status-pill ${getJoinStatusClass(request.status)}`;
+            statusPill.textContent = getJoinStatusLabel(request.status);
+            actions.appendChild(statusPill);
+
+            if (request.status === 'approved') {
+                const room = roomCache.find((candidate) => candidate.id === request.room_id);
+                if (room) {
+                    const openBtn = document.createElement('button');
+                    openBtn.type = 'button';
+                    openBtn.className = 'mini-action-btn';
+                    openBtn.textContent = 'Open Room';
+                    openBtn.addEventListener('click', () => {
+                        closeNotifications();
+                        selectRoom(room);
+                    });
+                    actions.appendChild(openBtn);
+                }
+            }
+        }
+
+        top.appendChild(title);
+        top.appendChild(meta);
+
+        item.appendChild(top);
+        item.appendChild(body);
+        item.appendChild(actions);
+        ui.notificationList.appendChild(item);
+    });
+
+    const invitationCount = notificationStore.invitations.length;
+    const pendingRequestCount = notificationStore.requestStatuses.filter((request) => request.status === 'pending').length;
+    setNotificationBadge(invitationCount + pendingRequestCount);
+}
+
+function closeNotifications() {
+    if (!ui.notificationPanel) {
+        return;
+    }
+    ui.notificationPanel.classList.add('room-hidden');
+    ui.notificationBtn.classList.remove('active');
+}
+
+async function toggleNotifications() {
+    if (!ui.notificationPanel) {
+        return;
+    }
+
+    const hidden = ui.notificationPanel.classList.contains('room-hidden');
+    if (!hidden) {
+        closeNotifications();
+        return;
+    }
+
+    ui.notificationPanel.classList.remove('room-hidden');
+    ui.notificationBtn.classList.add('active');
+    await refreshNotifications(true);
+}
+
 function renderRoomList(rooms) {
     ui.roomList.innerHTML = '';
 
@@ -248,61 +484,8 @@ function renderRoomList(rooms) {
         item.addEventListener('click', () => {
             selectRoom(room);
         });
+
         ui.roomList.appendChild(item);
-    });
-}
-
-function renderPendingInvitations(invitations) {
-    ui.pendingInvitationsList.innerHTML = '';
-
-    if (!invitations.length) {
-        ui.pendingInvitationsList.innerHTML = '<div class="room-list-notice">No invitations pending</div>';
-        return;
-    }
-
-    invitations.forEach((invitation) => {
-        const row = document.createElement('div');
-        row.className = 'invitation-row';
-
-        const main = document.createElement('div');
-        main.className = 'invite-main';
-
-        const room = document.createElement('div');
-        room.className = 'invite-room';
-        room.textContent = invitation.room_name;
-
-        const meta = document.createElement('div');
-        meta.className = 'invite-meta';
-        meta.textContent = `Invited by ${invitation.inviter_username}`;
-
-        main.appendChild(room);
-        main.appendChild(meta);
-
-        const actions = document.createElement('div');
-        actions.className = 'row-actions';
-
-        const acceptBtn = document.createElement('button');
-        acceptBtn.type = 'button';
-        acceptBtn.className = 'mini-action-btn accept';
-        acceptBtn.textContent = 'Accept';
-        acceptBtn.addEventListener('click', () => {
-            acceptInvitation(invitation.id);
-        });
-
-        const rejectBtn = document.createElement('button');
-        rejectBtn.type = 'button';
-        rejectBtn.className = 'mini-action-btn reject';
-        rejectBtn.textContent = 'Reject';
-        rejectBtn.addEventListener('click', () => {
-            rejectInvitation(invitation.id);
-        });
-
-        actions.appendChild(acceptBtn);
-        actions.appendChild(rejectBtn);
-
-        row.appendChild(main);
-        row.appendChild(actions);
-        ui.pendingInvitationsList.appendChild(row);
     });
 }
 
@@ -437,7 +620,7 @@ function renderMessages(messages) {
     if (!messages.length) {
         const empty = document.createElement('p');
         empty.className = 'empty-room-message';
-        empty.textContent = 'Room is empty. Start the first message.';
+        empty.textContent = 'Room is quiet. Start the first message.';
         ui.chatMessages.appendChild(empty);
         return;
     }
@@ -465,6 +648,7 @@ function renderMessages(messages) {
         header.appendChild(time);
         wrapper.appendChild(header);
         wrapper.appendChild(bubble);
+
         ui.chatMessages.appendChild(wrapper);
     });
 
@@ -479,10 +663,10 @@ async function fetchMyRooms() {
         }
 
         const data = await res.json();
-        const rooms = data.rooms || [];
-        renderRoomList(rooms);
+        roomCache = data.rooms || [];
+        renderRoomList(roomCache);
 
-        if (activeRoom && !rooms.some((room) => room.id === activeRoom)) {
+        if (activeRoom && !roomCache.some((room) => room.id === activeRoom)) {
             resetRoomContext();
             showView('hub');
             setStatus('hub-status', 'Current room is no longer available.');
@@ -501,13 +685,45 @@ async function fetchPendingInvitations(showErrors = true) {
         }
 
         const data = await res.json();
-        renderPendingInvitations(data.invitations || []);
+        return data.invitations || [];
     } catch (error) {
-        renderPendingInvitations([]);
         if (showErrors) {
-            showError('invitation-error', error.message || 'Failed to load invitations');
+            showError('notification-error', error.message || 'Failed to load invitations');
         }
+        return [];
     }
+}
+
+async function fetchMyJoinRequestStatuses(showErrors = true) {
+    try {
+        const res = await fetchWithTimeout(`${API_BASE}/join-requests/me`, { headers: getHeaders() });
+        if (!res.ok) {
+            throw new Error(await getErrorMessage(res, 'Failed to load request statuses'));
+        }
+
+        const data = await res.json();
+        return data.requests || [];
+    } catch (error) {
+        if (showErrors) {
+            showError('notification-error', error.message || 'Failed to load request statuses');
+        }
+        return [];
+    }
+}
+
+async function refreshNotifications(showErrors = true) {
+    if (showErrors) {
+        clearErrors();
+    }
+
+    const [invitations, requestStatuses] = await Promise.all([
+        fetchPendingInvitations(showErrors),
+        fetchMyJoinRequestStatuses(showErrors)
+    ]);
+
+    notificationStore.invitations = invitations;
+    notificationStore.requestStatuses = requestStatuses;
+    renderNotifications();
 }
 
 async function loadMembers(showErrors = true) {
@@ -574,7 +790,7 @@ async function loadMessages() {
             const message = await getErrorMessage(res, 'Failed to load messages');
             if (res.status === 403 || res.status === 404) {
                 resetRoomContext();
-                await Promise.all([fetchMyRooms(), fetchPendingInvitations(false)]);
+                await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
                 showView('hub');
                 setStatus('hub-status', message);
                 return;
@@ -602,12 +818,13 @@ async function selectRoom(room) {
 
     clearErrors();
     clearStatus();
+    closeNotifications();
     showView('chat');
     closeMobileSidebar();
 
     await Promise.all([
         fetchMyRooms(),
-        fetchPendingInvitations(false),
+        refreshNotifications(false),
         loadMessages(),
         loadMembers(false),
         loadJoinRequests(false)
@@ -623,9 +840,11 @@ async function openManageView() {
     if (!activeRoom) {
         return;
     }
+
     clearErrors();
     clearStatus();
     ui.displayInviteCode.textContent = currentInviteCode || '---';
+    closeNotifications();
     showView('invite');
     await Promise.all([loadMembers(), loadJoinRequests()]);
 }
@@ -653,15 +872,15 @@ async function acceptInvitation(invitationId) {
         });
 
         if (!res.ok) {
-            showError('invitation-error', await getErrorMessage(res, 'Failed to accept invitation'));
+            showError('notification-error', await getErrorMessage(res, 'Failed to accept invitation'));
             return;
         }
 
         const data = await res.json();
         setStatus('hub-status', data.message || 'Invitation accepted.');
-        await Promise.all([fetchMyRooms(), fetchPendingInvitations(false)]);
+        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
     } catch (error) {
-        showError('invitation-error', getNetworkErrorMessage(error));
+        showError('notification-error', getNetworkErrorMessage(error));
     }
 }
 
@@ -674,13 +893,13 @@ async function rejectInvitation(invitationId) {
         });
 
         if (!res.ok) {
-            showError('invitation-error', await getErrorMessage(res, 'Failed to reject invitation'));
+            showError('notification-error', await getErrorMessage(res, 'Failed to reject invitation'));
             return;
         }
 
-        await fetchPendingInvitations(false);
+        await refreshNotifications(false);
     } catch (error) {
-        showError('invitation-error', getNetworkErrorMessage(error));
+        showError('notification-error', getNetworkErrorMessage(error));
     }
 }
 
@@ -702,7 +921,7 @@ async function approveJoinRequest(requestId, username) {
         }
 
         setStatus('action-status', `${username} approved.`);
-        await Promise.all([loadJoinRequests(false), loadMembers(false), fetchMyRooms()]);
+        await Promise.all([loadJoinRequests(false), loadMembers(false), fetchMyRooms(), refreshNotifications(false)]);
     } catch (error) {
         showError('request-error', getNetworkErrorMessage(error));
     }
@@ -726,7 +945,7 @@ async function rejectJoinRequest(requestId, username) {
         }
 
         setStatus('action-status', `${username} request rejected.`);
-        await loadJoinRequests(false);
+        await Promise.all([loadJoinRequests(false), refreshNotifications(false)]);
     } catch (error) {
         showError('request-error', getNetworkErrorMessage(error));
     }
@@ -754,8 +973,8 @@ async function removeMember(targetUsername) {
             return;
         }
 
-        setStatus('action-status', `${targetUsername} removed.`);
-        await Promise.all([loadMembers(false), fetchMyRooms()]);
+        setStatus('action-status', `${targetUsername} removed from room.`);
+        await Promise.all([loadMembers(false), fetchMyRooms(), refreshNotifications(false)]);
     } catch (error) {
         showError('manage-error', getNetworkErrorMessage(error));
     }
@@ -789,7 +1008,7 @@ async function leaveRoom() {
 
         const data = await res.json();
         resetRoomContext();
-        await Promise.all([fetchMyRooms(), fetchPendingInvitations(false)]);
+        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
         showView('hub');
         setStatus('hub-status', data.message || 'You left the room.');
     } catch (error) {
@@ -803,7 +1022,7 @@ async function deleteRoom() {
     }
 
     if (!isCurrentUserAdmin()) {
-        showError('manage-error', 'Only admin can delete the room.');
+        showError('manage-error', 'Only admin can delete this room.');
         return;
     }
 
@@ -824,7 +1043,7 @@ async function deleteRoom() {
         }
 
         resetRoomContext();
-        await Promise.all([fetchMyRooms(), fetchPendingInvitations(false)]);
+        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
         showView('hub');
         setStatus('hub-status', 'Room deleted successfully.');
     } catch (error) {
@@ -843,8 +1062,9 @@ ui.hubBtn.addEventListener('click', async () => {
     resetRoomContext();
     clearErrors();
     clearStatus();
+    closeNotifications();
     showView('hub');
-    await Promise.all([fetchMyRooms(), fetchPendingInvitations(false)]);
+    await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
 });
 
 ui.navCreateBtn.addEventListener('click', () => {
@@ -867,10 +1087,41 @@ ui.roomInfoBtn.addEventListener('click', openManageView);
 ui.openManageBtn.addEventListener('click', openManageView);
 ui.copyInviteBtn.addEventListener('click', copyInviteCode);
 ui.refreshMembersBtn.addEventListener('click', () => loadMembers());
+ui.refreshRequestsBtn.addEventListener('click', () => loadJoinRequests());
 ui.leaveRoomBtn.addEventListener('click', leaveRoom);
 ui.deleteRoomBtn.addEventListener('click', deleteRoom);
-ui.refreshInvitationsBtn.addEventListener('click', () => fetchPendingInvitations());
-ui.refreshRequestsBtn.addEventListener('click', () => loadJoinRequests());
+
+if (ui.notificationBtn) {
+    ui.notificationBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await toggleNotifications();
+    });
+}
+
+if (ui.notificationRefreshBtn) {
+    ui.notificationRefreshBtn.addEventListener('click', async () => {
+        await refreshNotifications(true);
+    });
+}
+
+document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!ui.notificationPanel || !ui.notificationBtn) {
+        return;
+    }
+
+    if (ui.notificationPanel.contains(target) || ui.notificationBtn.contains(target)) {
+        return;
+    }
+
+    closeNotifications();
+});
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        closeNotifications();
+    }
+});
 
 document.getElementById('submit-create-btn').addEventListener('click', async () => {
     clearErrors();
@@ -930,7 +1181,7 @@ document.getElementById('submit-join-btn').addEventListener('click', async () =>
         ui.joinCode.value = '';
         showView('hub');
         setStatus('hub-status', data.message || 'Join request sent.');
-        await fetchMyRooms();
+        await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
     } catch (error) {
         showError('join-error', getNetworkErrorMessage(error));
     }
@@ -966,6 +1217,7 @@ document.getElementById('submit-invite-btn').addEventListener('click', async () 
         const data = await res.json();
         ui.inviteUsername.value = '';
         setStatus('action-status', data.message || 'Invitation sent.');
+        await refreshNotifications(false);
     } catch (error) {
         showError('invite-error', getNetworkErrorMessage(error));
     }
@@ -1029,5 +1281,12 @@ window.addEventListener('resize', () => {
 
 window.onload = async () => {
     showView('hub');
-    await Promise.all([fetchMyRooms(), fetchPendingInvitations(false)]);
+    await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
+
+    if (notificationInterval) {
+        clearInterval(notificationInterval);
+    }
+    notificationInterval = setInterval(() => {
+        refreshNotifications(false);
+    }, NOTIFICATION_POLL_MS);
 };

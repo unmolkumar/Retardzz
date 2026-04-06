@@ -273,6 +273,35 @@ async def get_join_requests(room_id: str, admin_username: str) -> List[dict]:
 	return result
 
 
+async def get_my_join_request_statuses(username: str) -> List[dict]:
+	db = await _get_db()
+	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
+	rooms_coll = db[ROOM_COLLECTION]
+
+	request_docs = await join_requests_coll.find(
+		{"requester_username": username}
+	).sort("created_at", -1).to_list(length=200)
+
+	if not request_docs:
+		return []
+
+	room_ids = [
+		_to_object_id(doc["room_id"], "room id")
+		for doc in request_docs
+		if ObjectId.is_valid(doc.get("room_id", ""))
+	]
+	room_docs = await rooms_coll.find({"_id": {"$in": room_ids}}).to_list(length=200)
+	room_map = {str(doc["_id"]): doc.get("name", "Room") for doc in room_docs}
+
+	result = []
+	for request_doc in request_docs:
+		formatted = _format_join_request_doc(request_doc)
+		formatted["room_name"] = room_map.get(formatted["room_id"], "Room")
+		result.append(formatted)
+
+	return result
+
+
 async def approve_join_request(room_id: str, request_id: str, admin_username: str) -> dict:
 	db = await _get_db()
 	rooms_coll = db[ROOM_COLLECTION]

@@ -33,6 +33,15 @@ type WhiteboardTool =
   | "diamond"
   | "text";
 
+type WhiteboardIcon =
+  | WhiteboardTool
+  | "options"
+  | "caret"
+  | "export"
+  | "share"
+  | "clear"
+  | "grid";
+
 interface EditorProps {
   roomId: string;
   roomName?: string;
@@ -70,17 +79,17 @@ const SIZE_OPTIONS: Array<{ label: string; value: TLDefaultSizeStyle }> = [
   { label: "Large", value: "l" },
 ];
 
-const TOOL_OPTIONS: Array<{ id: WhiteboardTool; label: string }> = [
-  { id: "select", label: "Sel" },
-  { id: "hand", label: "Hand" },
-  { id: "draw", label: "Draw" },
-  { id: "eraser", label: "Erase" },
-  { id: "arrow", label: "Arrow" },
-  { id: "line", label: "Line" },
-  { id: "rectangle", label: "Rect" },
-  { id: "ellipse", label: "Ellipse" },
-  { id: "diamond", label: "Diamond" },
-  { id: "text", label: "Text" },
+const TOOL_OPTIONS: Array<{ id: WhiteboardTool; label: string; icon: WhiteboardTool }> = [
+  { id: "select", label: "Select", icon: "select" },
+  { id: "hand", label: "Pan", icon: "hand" },
+  { id: "draw", label: "Draw", icon: "draw" },
+  { id: "eraser", label: "Erase", icon: "eraser" },
+  { id: "arrow", label: "Arrow", icon: "arrow" },
+  { id: "line", label: "Line", icon: "line" },
+  { id: "rectangle", label: "Rect", icon: "rectangle" },
+  { id: "ellipse", label: "Ellipse", icon: "ellipse" },
+  { id: "diamond", label: "Diamond", icon: "diamond" },
+  { id: "text", label: "Text", icon: "text" },
 ];
 
 function formatElapsed(seconds: number): string {
@@ -132,6 +141,137 @@ function applyTool(editor: TldrawEditor, tool: WhiteboardTool) {
   }
 
   editor.setCurrentTool(tool);
+}
+
+function renderIcon(icon: WhiteboardIcon) {
+  const sharedProps = {
+    className: "wb-icon",
+    viewBox: "0 0 20 20",
+    fill: "none",
+    stroke: "currentColor",
+    "aria-hidden": "true",
+  } as const;
+
+  switch (icon) {
+    case "select":
+      return (
+        <svg {...sharedProps}>
+          <path d="M5 3v14l4-4 3 6 2-1-3-6 5-1-11-9z" />
+        </svg>
+      );
+    case "hand":
+      return (
+        <svg {...sharedProps}>
+          <path d="M6 10V7a1 1 0 0 1 2 0v3" />
+          <path d="M8 10V5a1 1 0 0 1 2 0v5" />
+          <path d="M10 10V6a1 1 0 0 1 2 0v4" />
+          <path d="M12 10V7a1 1 0 0 1 2 0v5a4 4 0 0 1-4 4H8a3 3 0 0 1-3-3v-1" />
+        </svg>
+      );
+    case "draw":
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 16l3-1 8-8-2-2-8 8-1 3z" />
+          <path d="M11 5l2 2" />
+        </svg>
+      );
+    case "eraser":
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 12l6-6 6 6-4 4H8z" />
+          <path d="M10 16h6" />
+        </svg>
+      );
+    case "arrow":
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 16L16 4" />
+          <path d="M10 4h6v6" />
+        </svg>
+      );
+    case "line":
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 12h12" />
+        </svg>
+      );
+    case "rectangle":
+      return (
+        <svg {...sharedProps}>
+          <rect x="4" y="6" width="12" height="10" rx="1.5" />
+        </svg>
+      );
+    case "ellipse":
+      return (
+        <svg {...sharedProps}>
+          <ellipse cx="10" cy="11" rx="6" ry="4.5" />
+        </svg>
+      );
+    case "diamond":
+      return (
+        <svg {...sharedProps}>
+          <path d="M10 4l6 7-6 7-6-7z" />
+        </svg>
+      );
+    case "text":
+      return (
+        <svg {...sharedProps}>
+          <path d="M5 5h10" />
+          <path d="M10 5v12" />
+        </svg>
+      );
+    case "options":
+      return (
+        <svg {...sharedProps}>
+          <path d="M5 6h10" />
+          <circle cx="8" cy="6" r="1.3" fill="currentColor" stroke="none" />
+          <path d="M5 10h10" />
+          <circle cx="12" cy="10" r="1.3" fill="currentColor" stroke="none" />
+          <path d="M5 14h10" />
+          <circle cx="9" cy="14" r="1.3" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "caret":
+      return (
+        <svg {...sharedProps}>
+          <path d="M6 8l4 4 4-4" />
+        </svg>
+      );
+    case "export":
+      return (
+        <svg {...sharedProps}>
+          <path d="M10 4v9" />
+          <path d="M6.5 9.5L10 13l3.5-3.5" />
+          <path d="M4 16h12" />
+        </svg>
+      );
+    case "share":
+      return (
+        <svg {...sharedProps}>
+          <path d="M7.5 12.5l5-5" />
+          <path d="M6 15H5a3 3 0 0 1 0-6h1" />
+          <path d="M14 9h1a3 3 0 0 1 0 6h-1" />
+        </svg>
+      );
+    case "clear":
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 6h12" />
+          <path d="M7 6V4h6v2" />
+          <rect x="6" y="6" width="8" height="10" rx="1" />
+          <path d="M9 9v4" />
+          <path d="M11 9v4" />
+        </svg>
+      );
+    case "grid":
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 4h12v12H4z" />
+          <path d="M10 4v12" />
+          <path d="M4 10h12" />
+        </svg>
+      );
+  }
 }
 
 export function useYjsStore({
@@ -383,10 +523,6 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
     }
   }
 
-  function showRoomSettings() {
-    setStatusText(`Room: ${resolvedRoomName} | Members online: ${collaborators.length + 1}`);
-  }
-
   return (
     <div
       className={`wb-shell ${gridEnabled ? "wb-grid-enabled" : ""}`}
@@ -407,14 +543,24 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
               className="wb-options-btn"
               onClick={() => setOptionsOpen((open) => !open)}
             >
-              Options
+              <span className="wb-action-icon">{renderIcon("options")}</span>
+              <span>Options</span>
+              <span className={`wb-caret ${optionsOpen ? "open" : ""}`}>{renderIcon("caret")}</span>
             </button>
             {optionsOpen ? (
               <div className="wb-options-menu">
-                <button type="button" onClick={exportImage}>Export Image</button>
-                <button type="button" onClick={copyRoomLink}>Share Link</button>
-                <button type="button" onClick={showRoomSettings}>Room Settings</button>
-                <button type="button" className="danger" onClick={clearCanvas}>Clear Canvas</button>
+                <button type="button" onClick={exportImage}>
+                  <span className="wb-menu-icon">{renderIcon("export")}</span>
+                  <span>Export Image</span>
+                </button>
+                <button type="button" onClick={copyRoomLink}>
+                  <span className="wb-menu-icon">{renderIcon("share")}</span>
+                  <span>Share Link</span>
+                </button>
+                <button type="button" className="danger" onClick={clearCanvas}>
+                  <span className="wb-menu-icon">{renderIcon("clear")}</span>
+                  <span>Clear Canvas</span>
+                </button>
               </div>
             ) : null}
           </div>
@@ -472,7 +618,8 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
             className={`wb-tool-btn ${activeTool === tool.id ? "active" : ""}`}
             onClick={() => handleToolChange(tool.id)}
           >
-            {tool.label}
+            <span className="wb-tool-icon">{renderIcon(tool.icon)}</span>
+            <span className="wb-tool-label">{tool.label}</span>
           </button>
         ))}
         <button
@@ -480,7 +627,8 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
           className={`wb-grid-btn ${gridEnabled ? "active" : ""}`}
           onClick={() => setGridEnabled((value) => !value)}
         >
-          Grid
+          <span className="wb-tool-icon">{renderIcon("grid")}</span>
+          <span className="wb-tool-label">Grid</span>
         </button>
       </div>
 

@@ -1,0 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String       @id @default(uuid())
+  name      String
+  email     String       @unique
+  rooms     RoomMember[]
+}
+
+model Room {
+  id        String       @id @default(uuid())
+  name      String
+  hostId    String
+  members   RoomMember[]
+  polls     Poll[]
+}
+
+model RoomMember {
+  userId    String
+  roomId    String
+  role      String       // "HOST" or "GUEST"
+  user      User         @relation(fields: [userId], references: [id])
+  room      Room         @relation(fields: [roomId], references: [id])
+
+  @@id([userId, roomId])
+}
+
+model Poll {
+  id        String       @id @default(uuid())
+  roomId    String
+  question  String
+  options   PollOption[]
+  room      Room         @relation(fields: [roomId], references: [id])
+}
+
+model PollOption {
+  id        String       @id @default(uuid())
+  pollId    String
+  text      String
+  votes     Int          @default(0)
+  poll      Poll         @relation(fields: [pollId], references: [id])
+}
+

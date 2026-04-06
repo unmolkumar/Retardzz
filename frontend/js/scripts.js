@@ -65,9 +65,17 @@ const loadingMessage = document.getElementById("loading-message");
 const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
 const uploadBtn = document.getElementById("upload-btn");
-const subjectSelect = document.getElementById("subject-select");
-const subjectSelectorRow = document.getElementById("subject-selector-row");
+const subjectSelectShell = document.getElementById("subject-select-shell");
+const subjectPickerBtn = document.getElementById("subject-picker-btn");
+const subjectPickerValue = document.getElementById("subject-picker-value");
+const subjectPickerPopup = document.getElementById("subject-picker-popup");
+const subjectOptionButtons = Array.from(document.querySelectorAll(".subject-option"));
+const subjectConfirmBox = document.getElementById("subject-confirm-box");
+const subjectConfirmText = document.getElementById("subject-confirm-text");
+const subjectConfirmYes = document.getElementById("subject-confirm-yes");
+const subjectConfirmNo = document.getElementById("subject-confirm-no");
 const subjectLockBadge = document.getElementById("subject-lock-badge");
+const subjectLockTooltip = document.getElementById("subject-lock-tooltip");
 const difficultyPicker = document.getElementById("difficulty-picker");
 const difficultyPickerBtn = document.getElementById("difficulty-picker-btn");
 const difficultyPickerLabel = document.getElementById("difficulty-picker-label");
@@ -80,6 +88,7 @@ const mobileCloseBtn = document.getElementById("mobile-close-btn");
 const sidebarOverlay = document.getElementById("sidebar-overlay");
 
 let isSendingMessage = false;
+let pendingSubjectSelection = null;
 
 // Helper to update title bar visibility (desktop + mobile)
 function updateTitleBar(title) {
@@ -291,15 +300,19 @@ let generatingChatId = null;  // The chat_id currently generating a response
 let isGenerating = false;     // Whether AI response generation is in progress
 
 function syncSelectionControlsLock() {
-	const lockSubjectControl = isGenerating || isActiveChatSubjectLocked();
+	const lockSubjectControl = isGenerating;
 	const lockDifficultyControl = isGenerating;
 
-	if (subjectSelect) {
-		subjectSelect.disabled = lockSubjectControl;
+	if (subjectPickerBtn) {
+		subjectPickerBtn.disabled = lockSubjectControl;
 	}
 
 	if (difficultyPickerBtn) {
 		difficultyPickerBtn.disabled = lockDifficultyControl;
+	}
+
+	if (lockSubjectControl) {
+		closeSubjectPickerPopup(true);
 	}
 
 	if (lockDifficultyControl) {
@@ -1534,6 +1547,18 @@ function getSubjectInitial(subject) {
 	return normalized.charAt(0).toUpperCase();
 }
 
+function updateSubjectPickerDisplay(subject) {
+	const normalizedSubject = normalizeSessionSubject(subject);
+
+	if (subjectPickerValue) {
+		subjectPickerValue.textContent = normalizedSubject;
+	}
+
+	subjectOptionButtons.forEach((optionButton) => {
+		optionButton.classList.toggle("active", optionButton.dataset.subject === normalizedSubject);
+	});
+}
+
 function updateActiveChatSubjectUi() {
 	const activeMeta = getChatMeta(state.activeChatId);
 	const isLocked = state.activeChatId ? activeMeta.hasMessages : false;
@@ -1546,40 +1571,51 @@ function updateActiveChatSubjectUi() {
 		localStorage.setItem("draftSubject", state.draftSubject);
 	}
 
-	if (subjectSelectorRow) {
-		subjectSelectorRow.hidden = isLocked;
+	const selectorValue = isLocked ? activeMeta.subject : state.draftSubject;
+	updateSubjectPickerDisplay(selectorValue);
+
+	if (subjectSelectShell) {
+		subjectSelectShell.classList.toggle("locked", isLocked);
+		subjectSelectShell.title = isLocked
+			? "You can't change subject now. This chat is locked."
+			: "";
 	}
 
-	if (subjectSelect) {
-		const selectorValue = isLocked ? activeMeta.subject : unlockedSubject;
-		subjectSelect.value = selectorValue;
+	if (subjectPickerBtn) {
+		subjectPickerBtn.setAttribute("aria-disabled", isLocked ? "true" : "false");
+		subjectPickerBtn.title = isLocked
+			? "You can't change subject now. This chat is locked."
+			: "Click to choose subject";
 	}
 
-	if (!subjectLockBadge) {
-		syncSelectionControlsLock();
-		return;
+	if (subjectLockTooltip) {
+		subjectLockTooltip.hidden = !isLocked;
 	}
 
-	if (!isLocked) {
-		subjectLockBadge.hidden = true;
-		subjectLockBadge.textContent = "";
-		subjectLockBadge.removeAttribute("title");
-		syncSelectionControlsLock();
-		return;
+	if (subjectLockBadge) {
+		const badgeSubject = isLocked ? activeMeta.subject : state.draftSubject;
+		const badgeLetter = getSubjectInitial(badgeSubject);
+		if (!badgeLetter) {
+			subjectLockBadge.hidden = true;
+			subjectLockBadge.textContent = "";
+			subjectLockBadge.removeAttribute("title");
+		} else {
+			subjectLockBadge.hidden = false;
+			subjectLockBadge.textContent = badgeLetter;
+			subjectLockBadge.title = isLocked
+				? `${badgeSubject} chat (locked)`
+				: `Selected subject: ${badgeSubject}`;
+		}
 	}
 
-	const badgeLetter = getSubjectInitial(activeMeta.subject);
-	if (!badgeLetter) {
-		subjectLockBadge.hidden = true;
-		subjectLockBadge.textContent = "";
-		subjectLockBadge.removeAttribute("title");
-		syncSelectionControlsLock();
-		return;
+	if (isLocked || !state.activeChatId) {
+		pendingSubjectSelection = null;
+		if (subjectConfirmBox) {
+			subjectConfirmBox.hidden = true;
+		}
+		closeSubjectPickerPopup(true);
 	}
 
-	subjectLockBadge.hidden = false;
-	subjectLockBadge.textContent = badgeLetter;
-	subjectLockBadge.title = `${activeMeta.subject} chat`;
 	syncSelectionControlsLock();
 }
 
@@ -5395,6 +5431,58 @@ function toggleDifficultyPopup() {
 	}
 }
 
+function resetSubjectConfirmation() {
+	pendingSubjectSelection = null;
+	if (subjectConfirmBox) {
+		subjectConfirmBox.hidden = true;
+	}
+	if (subjectConfirmText) {
+		subjectConfirmText.textContent = "";
+	}
+}
+
+function closeSubjectPickerPopup(resetPending = false) {
+	if (!subjectSelectShell || !subjectPickerPopup) {
+		return;
+	}
+
+	subjectSelectShell.classList.remove("open");
+	subjectPickerPopup.setAttribute("aria-hidden", "true");
+	if (subjectPickerBtn) {
+		subjectPickerBtn.setAttribute("aria-expanded", "false");
+	}
+
+	if (resetPending) {
+		resetSubjectConfirmation();
+	}
+}
+
+function openSubjectPickerPopup() {
+	if (!subjectSelectShell || !subjectPickerPopup) {
+		return;
+	}
+
+	subjectSelectShell.classList.add("open");
+	subjectPickerPopup.setAttribute("aria-hidden", "false");
+	if (subjectPickerBtn) {
+		subjectPickerBtn.setAttribute("aria-expanded", "true");
+	}
+}
+
+function toggleSubjectPickerPopup() {
+	if (!subjectSelectShell || !subjectPickerPopup) {
+		return;
+	}
+
+	const shouldOpen = !subjectSelectShell.classList.contains("open");
+	if (shouldOpen) {
+		openSubjectPickerPopup();
+		return;
+	}
+
+	closeSubjectPickerPopup(true);
+}
+
 function setSessionSubject(subject) {
 	const normalizedSubject = normalizeSessionSubject(subject);
 	if (!SESSION_SUBJECTS.includes(normalizedSubject)) {
@@ -5403,14 +5491,49 @@ function setSessionSubject(subject) {
 
 	state.draftSubject = normalizedSubject;
 	localStorage.setItem("draftSubject", normalizedSubject);
+	resetSubjectConfirmation();
 
 	if (state.activeChatId && !isActiveChatSubjectLocked()) {
 		setChatMeta(state.activeChatId, normalizedSubject, false);
 	}
 
-	if (subjectSelect) {
-		subjectSelect.value = normalizedSubject;
+	updateActiveChatSubjectUi();
+}
+
+function requestSubjectConfirmation(candidateSubject) {
+	const currentSubject = normalizeSessionSubject(state.draftSubject);
+	const nextSubject = normalizeSessionSubject(candidateSubject);
+
+	if (nextSubject === currentSubject) {
+		showToast("This subject is already selected.");
+		return false;
 	}
+
+	pendingSubjectSelection = nextSubject;
+	if (subjectConfirmText) {
+		subjectConfirmText.textContent = `Do you want to choose ${nextSubject} for this session? This action can't be undone after the first message in this chat.`;
+	}
+	if (subjectConfirmBox) {
+		subjectConfirmBox.hidden = false;
+	}
+	return true;
+}
+
+function confirmSubjectForSession() {
+	if (!pendingSubjectSelection) {
+		showToast("Pick a subject first.");
+		return false;
+	}
+
+	const subjectToApply = normalizeSessionSubject(pendingSubjectSelection);
+	setSessionSubject(subjectToApply);
+	closeSubjectPickerPopup(true);
+	showToast(`${subjectToApply} selected. It will lock after the first message.`);
+	return true;
+}
+
+function cancelSubjectConfirmation() {
+	resetSubjectConfirmation();
 }
 
 if (difficultyPickerBtn) {
@@ -5442,11 +5565,16 @@ document.addEventListener("click", (event) => {
 	if (difficultyPicker && !difficultyPicker.contains(event.target)) {
 		closeDifficultyPopup();
 	}
+
+	if (subjectSelectShell && !subjectSelectShell.contains(event.target)) {
+		closeSubjectPickerPopup(true);
+	}
 });
 
 document.addEventListener("keydown", (event) => {
 	if (event.key === "Escape") {
 		closeDifficultyPopup();
+		closeSubjectPickerPopup(true);
 	}
 });
 
@@ -5455,34 +5583,61 @@ if (state.difficultyLevel) {
 	setDifficultyLevel(state.difficultyLevel);
 }
 
-if (subjectSelect) {
-	subjectSelect.addEventListener("change", () => {
+if (subjectPickerBtn) {
+	subjectPickerBtn.addEventListener("click", (event) => {
+		event.stopPropagation();
+
 		if (isActiveChatSubjectLocked()) {
-			const lockedSubject = getChatMeta(state.activeChatId).subject;
-			subjectSelect.value = lockedSubject;
 			showToast("Subject is locked for this chat. Start a new chat to choose another subject.");
 			return;
 		}
 
-		const currentSubject = normalizeSessionSubject(state.draftSubject);
-		const nextSubject = normalizeSessionSubject(subjectSelect.value);
-
 		if (isGenerating) {
-			subjectSelect.value = currentSubject;
 			showToast("Please wait for the current response to finish before changing subject.");
 			return;
 		}
 
-		if (nextSubject === currentSubject) {
-			subjectSelect.value = currentSubject;
+		toggleSubjectPickerPopup();
+	});
+}
+
+subjectOptionButtons.forEach((optionButton) => {
+	optionButton.addEventListener("click", (event) => {
+		event.stopPropagation();
+
+		if (isActiveChatSubjectLocked()) {
+			showToast("You can't change subject now. This chat is locked.");
 			return;
 		}
 
-		setSessionSubject(nextSubject);
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing subject.");
+			return;
+		}
+
+		const candidate = normalizeSessionSubject(optionButton.dataset.subject || "Anyone");
+		requestSubjectConfirmation(candidate);
+	});
+});
+
+if (subjectConfirmYes) {
+	subjectConfirmYes.addEventListener("click", (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		confirmSubjectForSession();
+	});
+}
+
+if (subjectConfirmNo) {
+	subjectConfirmNo.addEventListener("click", (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		cancelSubjectConfirmation();
 	});
 }
 
 setSessionSubject(state.draftSubject);
+closeSubjectPickerPopup(true);
 
 async function initializeApp() {
 	if (!state.userId) {

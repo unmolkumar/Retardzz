@@ -103,17 +103,34 @@
 			<span class="brand-title">Saivo</span>
 
 			<div class="header-subject-controls" id="header-subject-controls">
-				<div class="subject-selector-row" id="subject-selector-row">
-					<label class="subject-label" for="subject-select">Subject</label>
-					<select id="subject-select" class="subject-select" aria-label="Session subject selector">
-						<option value="Anyone">Anyone</option>
-						<option value="Maths">Maths</option>
-						<option value="Physics">Physics</option>
-						<option value="Chemistry">Chemistry</option>
-						<option value="Coding">Coding</option>
-					</select>
-				</div>
 				<div class="subject-lock-badge" id="subject-lock-badge" aria-label="Locked chat subject" hidden></div>
+				<div class="subject-select-shell" id="subject-select-shell">
+					<button class="subject-picker-btn" id="subject-picker-btn" type="button" aria-label="Session subject selector" aria-haspopup="true" aria-expanded="false">
+						<span class="subject-picker-value" id="subject-picker-value">Anyone</span>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<polyline points="6 9 12 15 18 9"></polyline>
+						</svg>
+					</button>
+					<div class="subject-picker-popup" id="subject-picker-popup" role="menu" aria-label="Choose subject">
+						<div class="subject-picker-warning">Warning: after your first message, this subject becomes permanent for this chat.</div>
+						<div class="subject-picker-options" id="subject-picker-options">
+							<button class="subject-option" type="button" data-subject="Anyone" role="menuitem">Anyone</button>
+							<button class="subject-option" type="button" data-subject="Maths" role="menuitem">Maths</button>
+							<button class="subject-option" type="button" data-subject="Physics" role="menuitem">Physics</button>
+							<button class="subject-option" type="button" data-subject="Chemistry" role="menuitem">Chemistry</button>
+							<button class="subject-option" type="button" data-subject="Coding" role="menuitem">Coding</button>
+						</div>
+						<div class="subject-confirm-box" id="subject-confirm-box" hidden>
+							<p class="subject-confirm-text" id="subject-confirm-text"></p>
+							<div class="subject-confirm-actions">
+								<button class="subject-confirm-btn" id="subject-confirm-yes" type="button">Confirm</button>
+								<button class="subject-cancel-btn" id="subject-confirm-no" type="button">Cancel</button>
+							</div>
+						</div>
+					</div>
+					<div class="subject-lock-tooltip" id="subject-lock-tooltip" role="status" aria-live="polite">You can't change subject now. This chat is locked.</div>
+				</div>
+				<span class="subject-label subject-label-right">Subject</span>
 			</div>
 
 			<!-- Mobile Chat Title (expandable, visible only on mobile) -->

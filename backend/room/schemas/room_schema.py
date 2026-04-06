@@ -10,7 +10,16 @@ class RoomCreateRequest(BaseModel):
 class RoomJoinRequest(BaseModel):
 	invite_code: str = Field(..., min_length=4)
 
+class RoomJoinRequestResponse(BaseModel):
+	message: str
+	room_id: str
+	room_name: str
+	status: str
+
 class RoomInviteRequest(BaseModel):
+	target_username: str = Field(..., min_length=1)
+
+class RoomRemoveMemberRequest(BaseModel):
 	target_username: str = Field(..., min_length=1)
 
 class RoomResponse(BaseModel):
@@ -25,3 +34,37 @@ class RoomResponse(BaseModel):
 
 class RoomListResponse(BaseModel):
 	rooms: List[RoomResponse]
+
+class RoomActionResponse(BaseModel):
+	message: str
+
+class RoomInvitationResponse(BaseModel):
+	id: str
+	room_id: str
+	room_name: str
+	inviter_username: str
+	status: str
+	created_at: datetime
+
+	model_config = ConfigDict(from_attributes=True)
+
+class RoomInvitationListResponse(BaseModel):
+	invitations: List[RoomInvitationResponse]
+
+class RoomJoinApprovalResponse(BaseModel):
+	id: str
+	room_id: str
+	room_name: str
+	requester_username: str
+	status: str
+	created_at: datetime
+
+	model_config = ConfigDict(from_attributes=True)
+
+class RoomJoinApprovalListResponse(BaseModel):
+	requests: List[RoomJoinApprovalResponse]
+
+class LeaveRoomResponse(BaseModel):
+	message: str
+	room_deleted: bool = False
+	new_admin_username: Optional[str] = None

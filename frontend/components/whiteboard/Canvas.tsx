@@ -15,7 +15,7 @@ import type {
   CursorPayload,
   WhiteboardProps,
 } from './types';
-import { renderElement, getCanvasPoint, uid } from './drawUtils';
+import { renderElement, getCanvasPoint, getTouchCanvasPoint, uid } from './drawUtils';
 import { useWhiteboardHistory } from './useWhiteboardHistory';
 import { useWhiteboardSocket } from './useWhiteboardSocket';
 import Toolbar from './Toolbar';
@@ -290,12 +290,153 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
         link.href = canvas.toDataURL('image/png');
         link.click();
       } else {
-        // PDF export — lightweight approach using canvas image
-        // For now, just export as PNG. Full PDF can be added post-MVP.
-        alert('PDF export coming soon! Use PNG for now.');
+        // PDF export via print dialog — zero external dependencies
+        const dataUrl = canvas.toDataURL('image/png');
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) return;
+        printWindow.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>Whiteboard Export - ${roomId}</title>
+              <style>
+                @page { size: landscape; margin: 0; }
+                body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
+                img { max-width: 100%; max-height: 100vh; }
+              </style>
+            </head>
+            <body>
+              <img src="${dataUrl}" onload="window.print(); window.close();" />
+            </body>
+          </html>
+        `);
+        printWindow.document.close();
       }
     },
     [roomId],
+  );
+
+  // ── Touch handlers (mobile / tablet support) ──────────────────
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas || e.touches.length !== 1) return;
+      const point = getTouchCanvasPoint(canvas, e.touches[0]);
+
+      if (activeTool === 'text') {
+        const rect = canvas.getBoundingClientRect();
+        setTextInput({
+          visible: true,
+          position: {
+            x: e.touches[0].clientX - rect.left,
+            y: e.touches[0].clientY - rect.top,
+          },
+          value: '',
+        });
+        return;
+      }
+
+      isDrawing.current = true;
+      if (activeTool === 'pen' || activeTool === 'eraser') {
+        currentPoints.current = [point];
+      } else {
+        shapeStart.current = point;
+      }
+    },
+    [activeTool],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas || e.touches.length !== 1) return;
+      const point = getTouchCanvasPoint(canvas, e.touches[0]);
+
+      emitCursor(point.x, point.y);
+      if (!isDrawing.current) return;
+
+      if (activeTool === 'pen' || activeTool === 'eraser') {
+        currentPoints.current.push(point);
+        redrawCanvas();
+        const ctx = canvas.getContext('2d');
+        if (ctx && currentPoints.current.length > 1) {
+          const preview: Stroke = {
+            id: 'preview',
+            tool: activeTool,
+            points: [...currentPoints.current],
+            color: activeColor,
+            size: brushSize,
+            userId,
+            timestamp: Date.now(),
+          };
+          renderElement(ctx, preview);
+        }
+      } else if (shapeStart.current) {
+        redrawCanvas();
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const preview: ShapeData = {
+            id: 'preview',
+            tool: activeTool as ShapeData['tool'],
+            start: shapeStart.current,
+            end: point,
+            color: activeColor,
+            size: brushSize,
+            userId,
+            timestamp: Date.now(),
+          };
+          renderElement(ctx, preview);
+        }
+      }
+    },
+    [activeTool, activeColor, brushSize, userId, redrawCanvas, emitCursor],
+  );
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      if (!isDrawing.current) return;
+      isDrawing.current = false;
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      if (activeTool === 'pen' || activeTool === 'eraser') {
+        if (currentPoints.current.length < 2) return;
+        const stroke: Stroke = {
+          id: uid(),
+          tool: activeTool,
+          points: [...currentPoints.current],
+          color: activeColor,
+          size: brushSize,
+          userId,
+          timestamp: Date.now(),
+        };
+        addElement(stroke);
+        emitDraw(stroke);
+        currentPoints.current = [];
+      } else if (shapeStart.current) {
+        // Use last known touch position for shape end
+        const lastTouch = e.changedTouches[0];
+        const endPt = getTouchCanvasPoint(canvas, lastTouch);
+        const shape: ShapeData = {
+          id: uid(),
+          tool: activeTool as ShapeData['tool'],
+          start: shapeStart.current,
+          end: endPt,
+          color: activeColor,
+          size: brushSize,
+          userId,
+          timestamp: Date.now(),
+        };
+        addElement(shape);
+        emitDraw(shape);
+        shapeStart.current = null;
+      }
+    },
+    [activeTool, activeColor, brushSize, userId, addElement, emitDraw],
   );
 
   // ── Keyboard shortcuts ────────────────────────────────────────
@@ -328,6 +469,9 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
           onMouseLeave={() => {
             isDrawing.current = false;
           }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         />
 
         {/* Text input overlay */}

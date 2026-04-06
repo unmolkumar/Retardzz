@@ -21,6 +21,7 @@
   position: relative;
   cursor: crosshair;
   overflow: hidden;
+  touch-action: none;  /* prevent scroll/zoom while drawing on mobile */
   background-color: #ffffff;
   background-image:
     radial-gradient(circle, #e5e7eb 1px, transparent 1px);

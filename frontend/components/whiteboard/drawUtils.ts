@@ -139,7 +139,7 @@ function drawText(
 
 // ── Coordinate helpers ──────────────────────────────────────────
 
-/** Get mouse/touch position relative to the canvas */
+/** Get mouse position relative to the canvas */
 export function getCanvasPoint(
   canvas: HTMLCanvasElement,
   e: React.MouseEvent | MouseEvent,
@@ -150,6 +150,20 @@ export function getCanvasPoint(
   return {
     x: (e.clientX - rect.left) * scaleX,
     y: (e.clientY - rect.top) * scaleY,
+  };
+}
+
+/** Get touch position relative to the canvas */
+export function getTouchCanvasPoint(
+  canvas: HTMLCanvasElement,
+  touch: React.Touch | Touch,
+): Point {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (touch.clientX - rect.left) * scaleX,
+    y: (touch.clientY - rect.top) * scaleY,
   };
 }
 

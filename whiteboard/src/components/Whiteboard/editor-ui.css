@@ -457,7 +457,6 @@
     0 16px 30px rgba(15, 23, 42, 0.32),
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
   -webkit-backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   animation: wb-float-in 0.52s ease-out;
 }
@@ -518,7 +517,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
   font-size: 16px;
   color: #334155;
   background: #e5e7eb;

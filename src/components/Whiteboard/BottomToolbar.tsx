@@ -51,7 +51,7 @@ export default function BottomToolbar() {
 
   const toggleGrid = () => {
     if (!editor) return;
-    editor.setGridMode(!editor.getInstanceState().isGridMode);
+    editor.updateInstanceState({ isGridMode: !editor.getInstanceState().isGridMode });
   };
 
   return (

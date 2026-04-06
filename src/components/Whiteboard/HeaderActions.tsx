@@ -90,7 +90,7 @@ export default function HeaderActions() {
                 onClick={() => { 
                   if (!editor) return;
                   if (confirm("Clear the canvas?")) {
-                    editor.selectAll().deleteShapes(editor.getSelectedShapeIds());
+                    editor.deleteShapes(Array.from(editor.getCurrentPageShapeIds()));
                     setIsOpen(false);
                   }
                 }} 

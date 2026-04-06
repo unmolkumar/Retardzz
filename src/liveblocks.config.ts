@@ -3,7 +3,7 @@ import { createRoomContext } from "@liveblocks/react";
 
 // TODO: Replace "pk_placeholder_key_here" with your actual Liveblocks public API key
 const client = createClient({
-  publicApiKey: "pk_placeholder_key_here",
+  publicApiKey: "pk_dev_biqbU0E4KKsVqGdUHzBrb_7JVAsUwCLPWmRImH_YR20aq5HbieJ7hqbwTIYnCHgP",
 });
 
 export const {

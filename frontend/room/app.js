@@ -704,8 +704,8 @@ function renderStudyMembers(members) {
 }
 
 async function syncStudySessionFromMembers() {
-    const liveMember = studyState.latestMembers.find((entry) => entry.is_live);
-    if (!liveMember) {
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    if (!selfStats || !selfStats.is_live) {
         const hadLiveSession = studyState.isLiveStudying;
         studyState.isLiveStudying = false;
         studyState.liveOwner = '';
@@ -722,36 +722,36 @@ async function syncStudySessionFromMembers() {
         }
 
         if (hadLiveSession) {
-            setStatus('study-status', 'Shared focus session is currently idle.');
+            setStatus('study-status', 'Your focus session is currently idle.');
         }
         return;
     }
 
-    const modeKey = STUDY_MODE_CONFIG[liveMember.active_mode_key] ? liveMember.active_mode_key : 'focus60';
-    const targetSeconds = Number(liveMember.active_target_seconds) > 0
-        ? Number(liveMember.active_target_seconds)
+    const modeKey = STUDY_MODE_CONFIG[selfStats.active_mode_key] ? selfStats.active_mode_key : 'focus60';
+    const targetSeconds = Number(selfStats.active_target_seconds) > 0
+        ? Number(selfStats.active_target_seconds)
         : STUDY_MODE_CONFIG[modeKey].minutes * 60;
 
-    const startedAtMs = parseServerTimestamp(liveMember.started_at || '');
+    const startedAtMs = parseServerTimestamp(selfStats.started_at || '');
     const elapsed = Number.isNaN(startedAtMs)
         ? 0
         : Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
     const remaining = Math.max(0, targetSeconds - elapsed);
 
-    const previousSignature = `${studyState.liveOwner}|${studyState.serverStartedAt || ''}`;
+    const previousSignature = `${studyState.serverStartedAt || ''}|${studyState.modeKey}`;
 
     studyState.modeKey = modeKey;
     studyState.durationSeconds = targetSeconds;
     studyState.remainingSeconds = remaining;
     studyState.isLiveStudying = true;
-    studyState.liveOwner = liveMember.username;
-    studyState.serverStartedAt = liveMember.started_at || null;
+    studyState.liveOwner = currentUser;
+    studyState.serverStartedAt = selfStats.started_at || null;
 
-    const currentSignature = `${studyState.liveOwner}|${studyState.serverStartedAt || ''}`;
+    const currentSignature = `${studyState.serverStartedAt || ''}|${studyState.modeKey}`;
 
     if (remaining <= 0) {
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Shared focus session completed.');
+        await stopLiveStudySession('Your focus session completed.');
         await loadStudyStats(false);
         return;
     }
@@ -761,11 +761,7 @@ async function syncStudySessionFromMembers() {
     }
 
     if (previousSignature !== currentSignature) {
-        if (studyState.liveOwner === currentUser) {
-            setStatus('study-status', 'You started a shared focus session.');
-        } else {
-            setStatus('study-status', `${studyState.liveOwner} started a shared focus session.`);
-        }
+        setStatus('study-status', 'Your focus session is active.');
     }
 
     renderStudyTimerUI();
@@ -824,7 +820,7 @@ async function startLiveStudySession() {
     studyState.liveOwner = currentUser;
     studyState.serverStartedAt = new Date().toISOString();
     studyState.remainingSeconds = studyState.durationSeconds;
-    setStatus('study-status', `${mode.label} started for everyone in this room.`);
+    setStatus('study-status', `${mode.label} started.`);
     return true;
 }
 
@@ -833,7 +829,8 @@ async function stopLiveStudySession(messageOverride = '') {
         return true;
     }
 
-    const hasLiveSession = studyState.isLiveStudying || studyState.latestMembers.some((entry) => entry.is_live);
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    const hasLiveSession = studyState.isLiveStudying || Boolean(selfStats && selfStats.is_live);
     if (!hasLiveSession) {
         return true;
     }
@@ -868,10 +865,36 @@ async function setStudyMode(modeKey) {
         return;
     }
 
-    if (studyState.running) {
+    if (modeKey === studyState.modeKey) {
+        return;
+    }
+
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    const hasLiveTimer = studyState.running || studyState.isLiveStudying || Boolean(selfStats && selfStats.is_live);
+
+    if (hasLiveTimer) {
+        const currentMode = getActiveStudyModeConfig();
+        const nextMode = STUDY_MODE_CONFIG[modeKey];
+        const confirmStop = window.confirm(
+            `You are currently running ${currentMode.label}. Stop this timer and switch to ${nextMode.label}?`
+        );
+
+        if (!confirmStop) {
+            return;
+        }
+
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Shared focus session paused for mode switch.');
+        await stopLiveStudySession('Timer stopped. Select your next session and press Start.');
         await loadStudyStats(false);
+
+        studyState.modeKey = modeKey;
+        studyState.durationSeconds = STUDY_MODE_CONFIG[modeKey].minutes * 60;
+        studyState.remainingSeconds = 0;
+        studyState.isLiveStudying = false;
+        studyState.liveOwner = '';
+        studyState.serverStartedAt = null;
+        renderStudyTimerUI();
+        return;
     }
 
     studyState.modeKey = modeKey;
@@ -897,8 +920,8 @@ function runStudyCountdownTick() {
     stopLocalStudyCountdown();
 
     const mode = getActiveStudyModeConfig();
-    stopLiveStudySession('Shared focus session completed. Great work.').then(() => {
-        pushActivityNotification('Shared session complete', `${mode.label} ended successfully.`, 'success');
+    stopLiveStudySession('Focus session completed. Great work.').then(() => {
+        pushActivityNotification('Session complete', `${mode.label} ended successfully.`, 'success');
         loadStudyStats(false);
         renderStudyTimerUI();
     });
@@ -912,7 +935,7 @@ async function handleStudyToggle() {
 
     if (studyState.running) {
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Shared focus session paused.');
+        await stopLiveStudySession('Your focus session paused.');
         await loadStudyStats(false);
         renderStudyTimerUI();
         return;
@@ -936,7 +959,7 @@ async function handleStudyReset() {
         stopLocalStudyCountdown();
     }
 
-    await stopLiveStudySession('Shared focus session reset.');
+    await stopLiveStudySession('Your focus session reset.');
     await loadStudyStats(false);
 
     studyState.remainingSeconds = studyState.durationSeconds;

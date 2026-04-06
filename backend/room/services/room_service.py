@@ -155,8 +155,10 @@ async def _finalize_live_study_doc(study_stats_coll, stats_doc: dict, now: datet
 	return stats_doc
 
 
-async def _discard_live_sessions_in_room(study_stats_coll, room_id: str, now: datetime):
-	live_docs = await study_stats_coll.find({"room_id": room_id, "is_live": True}).to_list(length=100)
+async def _discard_live_sessions_for_user(study_stats_coll, room_id: str, username: str, now: datetime):
+	live_docs = await study_stats_coll.find(
+		{"room_id": room_id, "username": username, "is_live": True}
+	).to_list(length=10)
 	for live_doc in live_docs:
 		await _finalize_live_study_doc(study_stats_coll, live_doc, now)
 
@@ -860,7 +862,7 @@ async def start_study_session(
 	now = _utcnow()
 	today_key = _today_key(now)
 
-	await _discard_live_sessions_in_room(study_stats_coll, room_id, now)
+	await _discard_live_sessions_for_user(study_stats_coll, room_id, username, now)
 
 	stats_doc = await study_stats_coll.find_one({"room_id": room_id, "username": username, "date_key": today_key})
 	if not stats_doc:
@@ -919,7 +921,7 @@ async def stop_study_session(room_id: str, username: str) -> dict:
 	today_key = _today_key(now)
 
 	stats_doc = await study_stats_coll.find_one(
-		{"room_id": room_id, "is_live": True},
+		{"room_id": room_id, "username": username, "is_live": True},
 		sort=[("updated_at", -1)],
 	)
 	if not stats_doc:

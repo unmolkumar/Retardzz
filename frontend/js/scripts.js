@@ -64,6 +64,11 @@ const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
 const uploadBtn = document.getElementById("upload-btn");
 const subjectSelect = document.getElementById("subject-select");
+const difficultyPicker = document.getElementById("difficulty-picker");
+const difficultyPickerBtn = document.getElementById("difficulty-picker-btn");
+const difficultyPickerLabel = document.getElementById("difficulty-picker-label");
+const difficultyPickerSymbol = document.getElementById("difficulty-picker-symbol");
+const difficultyPopup = document.getElementById("difficulty-popup");
 
 // Mobile sidebar elements
 const mobileMenuBtn = document.getElementById("mobile-menu-btn");
@@ -5135,11 +5140,17 @@ function renderSummaryCard(summaryData, responseLevel = null) {
 }
 
 // ========================
-// DIFFICULTY LEVEL BUTTONS
+// DIFFICULTY LEVEL POPUP
 // ========================
-const difficultyBtns = document.querySelectorAll(".diff-btn");
+const difficultyOptions = document.querySelectorAll(".difficulty-option");
 const DIFFICULTY_LEVELS = ["Neutral", "Beginner", "Intermediate", "Advanced"];
 const SESSION_SUBJECTS = ["Anyone", "Maths", "Physics", "Chemistry", "Coding"];
+const DIFFICULTY_META = {
+	Neutral: { symbol: "◉" },
+	Beginner: { symbol: "🌱" },
+	Intermediate: { symbol: "⚙" },
+	Advanced: { symbol: "🚀" },
+};
 
 function normalizeDifficultyLevel(level) {
 	if (typeof level !== "string") {
@@ -5193,9 +5204,42 @@ function setDifficultyLevel(level) {
 	state.difficultyLevel = normalizedLevel;
 	localStorage.setItem("difficultyLevel", normalizedLevel);
 
-	difficultyBtns.forEach(btn => {
-		btn.classList.toggle("active", btn.dataset.level === normalizedLevel);
+	const levelMeta = DIFFICULTY_META[normalizedLevel] || DIFFICULTY_META.Neutral;
+	if (difficultyPickerLabel) {
+		difficultyPickerLabel.textContent = normalizedLevel;
+	}
+	if (difficultyPickerSymbol) {
+		difficultyPickerSymbol.textContent = levelMeta.symbol;
+	}
+
+	difficultyOptions.forEach(option => {
+		option.classList.toggle("active", option.dataset.level === normalizedLevel);
 	});
+}
+
+function closeDifficultyPopup() {
+	if (!difficultyPopup || !difficultyPicker) {
+		return;
+	}
+
+	difficultyPopup.classList.remove("show");
+	difficultyPicker.classList.remove("open");
+	if (difficultyPickerBtn) {
+		difficultyPickerBtn.setAttribute("aria-expanded", "false");
+	}
+}
+
+function toggleDifficultyPopup() {
+	if (!difficultyPopup || !difficultyPicker) {
+		return;
+	}
+
+	const shouldOpen = !difficultyPopup.classList.contains("show");
+	difficultyPopup.classList.toggle("show", shouldOpen);
+	difficultyPicker.classList.toggle("open", shouldOpen);
+	if (difficultyPickerBtn) {
+		difficultyPickerBtn.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+	}
 }
 
 function setSessionSubject(subject) {
@@ -5212,10 +5256,31 @@ function setSessionSubject(subject) {
 	}
 }
 
-difficultyBtns.forEach(btn => {
-	btn.addEventListener("click", () => {
-		setDifficultyLevel(btn.dataset.level);
+if (difficultyPickerBtn) {
+	difficultyPickerBtn.addEventListener("click", (event) => {
+		event.stopPropagation();
+		toggleDifficultyPopup();
 	});
+}
+
+difficultyOptions.forEach(option => {
+	option.addEventListener("click", (event) => {
+		event.stopPropagation();
+		setDifficultyLevel(option.dataset.level);
+		closeDifficultyPopup();
+	});
+});
+
+document.addEventListener("click", (event) => {
+	if (difficultyPicker && !difficultyPicker.contains(event.target)) {
+		closeDifficultyPopup();
+	}
+});
+
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape") {
+		closeDifficultyPopup();
+	}
 });
 
 // Restore difficulty on load

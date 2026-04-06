@@ -15,10 +15,10 @@ import {
   type TLGeoShapeGeoStyle,
 } from "@tldraw/tldraw";
 import type { TLRecord } from "@tldraw/tlschema";
-import "tldraw/tldraw.css";
+import "@tldraw/tldraw/tldraw.css";
 import "./editor-ui.css";
-import * as Y from "yjs";
-import { LiveblocksYjsProvider } from "@liveblocks/yjs";
+import { getYjsProviderForRoom } from "@liveblocks/yjs";
+import type { Transaction, YMapEvent } from "yjs";
 import { useRoom, useMyPresence, useOthers } from "../../liveblocks.config";
 
 type WhiteboardTool =
@@ -136,8 +136,10 @@ function applyTool(editor: TldrawEditor, tool: WhiteboardTool) {
 
 export function useYjsStore({
   room,
+  username,
 }: {
   room: ReturnType<typeof useRoom>;
+  username: string;
 }) {
   const [store] = useState<TLStore>(() => createTLStore({
     shapeUtils: defaultShapeUtils,
@@ -146,17 +148,15 @@ export function useYjsStore({
   useEffect(() => {
     if (!room) return;
 
-    // Initialize Y.Doc
-    const yDoc = new Y.Doc();
-    
-    // Bind Y.Doc to Liveblocks room
-    const provider = new LiveblocksYjsProvider(room, yDoc);
-    
-    const yShapes = yDoc.getMap<TLRecord>("shapes");
+    const yProvider = getYjsProviderForRoom(room);
+    const yDoc = yProvider.getYDoc();
+    const yRecords = yDoc.getMap<TLRecord>("records");
+
+    yProvider.awareness.setLocalStateField("user", { name: username });
 
     // Hydration: Prepopulate store with existing Y.Doc data
     const initialRecords: TLRecord[] = [];
-    yShapes.forEach((record) => {
+    yRecords.forEach((record) => {
       initialRecords.push(record);
     });
     if (initialRecords.length > 0) {
@@ -170,13 +170,13 @@ export function useYjsStore({
         
         yDoc.transact(() => {
           Object.values(update.changes.added).forEach((record) => {
-            yShapes.set(record.id, record);
+            yRecords.set(record.id, record);
           });
           Object.values(update.changes.updated).forEach(([, to]) => {
-            yShapes.set(to.id, to);
+            yRecords.set(to.id, to);
           });
           Object.keys(update.changes.removed).forEach((id) => {
-            yShapes.delete(id);
+            yRecords.delete(id);
           });
         });
       },
@@ -184,7 +184,7 @@ export function useYjsStore({
     );
 
     // Yjs Observer: Pull remote changes into the newStore
-    const observer = (event: Y.YMapEvent<TLRecord>, transaction: Y.Transaction) => {
+    const observer = (event: YMapEvent<TLRecord>, transaction: Transaction) => {
       if (transaction.local) return; // CRITICAL: Prevent infinite recursive loops
 
       const toPut: TLRecord[] = [];
@@ -192,7 +192,7 @@ export function useYjsStore({
 
       event.changes.keys.forEach((change, key) => {
         if (change.action === "add" || change.action === "update") {
-          const record = yShapes.get(key);
+          const record = yRecords.get(key);
           if (record) toPut.push(record);
         } else if (change.action === "delete") {
           toRemove.push(key as TLRecord["id"]);
@@ -207,24 +207,23 @@ export function useYjsStore({
       }
     };
 
-    yShapes.observe(observer);
+    yRecords.observe(observer);
 
-    // Cleanup function destroys ydoc and provider
+    // Use provider instances managed by Liveblocks for each room.
     return () => {
       unlisten();
-      yShapes.unobserve(observer);
-      provider.destroy();
-      yDoc.destroy();
+      yRecords.unobserve(observer);
     };
-  }, [room, store]);
+  }, [room, store, username]);
 
   return store;
 }
 
 export default function Editor({ roomId, roomName = "", username = "" }: EditorProps) {
+  const resolvedUsername = username.trim() || "Guest";
   const room = useRoom();
   const others = useOthers();
-  const store = useYjsStore({ room });
+  const store = useYjsStore({ room, username: resolvedUsername });
   const [, updateMyPresence] = useMyPresence();
   const [editor, setEditor] = useState<TldrawEditor | null>(null);
   const [activeTool, setActiveTool] = useState<WhiteboardTool>("draw");
@@ -236,9 +235,26 @@ export default function Editor({ roomId, roomName = "", username = "" }: EditorP
   const [statusText, setStatusText] = useState<string>("Ready");
   const optionsRef = useRef<HTMLDivElement | null>(null);
 
-  const resolvedUsername = username.trim() || "Guest";
   const resolvedRoomName = roomName.trim() || `Study Room ${roomId.slice(0, 6)}`;
   const userColorKey = useMemo(() => pickColor(resolvedUsername || roomId), [resolvedUsername, roomId]);
+
+  useEffect(() => {
+    if (!room) {
+      return;
+    }
+
+    const yProvider = getYjsProviderForRoom(room);
+    const handleSync = (isSynced: boolean) => {
+      setStatusText(isSynced ? `Live sync ready as ${resolvedUsername}.` : "Reconnecting live sync...");
+    };
+
+    handleSync(yProvider.synced);
+    yProvider.on("sync", handleSync);
+
+    return () => {
+      yProvider.off("sync", handleSync);
+    };
+  }, [room, resolvedUsername]);
 
   useEffect(() => {
     updateMyPresence({

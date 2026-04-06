@@ -43,7 +43,7 @@ export default function CollaborativeCanvas({ roomId, username = "", roomName = 
   const normalizedRoomId = roomId.trim().toLowerCase();
   const normalizedBoardId = boardId.trim().toLowerCase();
   const roomScopedId = normalizedRoomId ? `saivo-room-${normalizedRoomId}` : "";
-  const collaborationRoomId = roomScopedId || normalizedBoardId || "saivo-room-default";
+  const collaborationRoomId = normalizedBoardId || roomScopedId || "saivo-room-default";
   const presenceColor = pickColor(resolvedUsername || collaborationRoomId);
 
   return (

@@ -376,8 +376,9 @@ function getWhiteboardRoomUrl(roomId) {
     const roomPath = `${getWhiteboardBaseUrl()}/room/${encodeURIComponent(roomId)}`;
     const whiteboardUrl = new URL(roomPath);
     const roomName = getRoomNameFromCache(roomId, 'Study Room');
-    const normalizedRoomSeed = (roomId || '').toString().trim().toLowerCase();
-    const boardId = normalizedRoomSeed ? `saivo-room-${normalizedRoomSeed}` : 'saivo-room-default';
+    const rawBoardSeed = (roomName || roomId || '').toString().trim().toLowerCase();
+    const normalizedBoardSeed = rawBoardSeed.replace(/\s+/g, '-');
+    const boardId = normalizedBoardSeed ? `saivo-room-${normalizedBoardSeed}` : 'saivo-room-default';
 
     if (currentUser) {
         whiteboardUrl.searchParams.set('username', currentUser);

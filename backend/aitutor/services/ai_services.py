@@ -16,6 +16,11 @@ FALLBACK_RESPONSE = "I'm having trouble responding right now. Please try again."
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL_NAME = "llama-3.1-8b-instant"
 OPTION_KEYS = ("A", "B", "C", "D")
+QUIZ_TOPIC_PATTERNS = (
+    re.compile(r"(?:make|create|generate)\s+(?:me\s+)?(?:a\s+)?quiz\s+(?:on|about)\s+(.+)", re.IGNORECASE),
+    re.compile(r"quiz\s+me\s+(?:on|about)\s+(.+)", re.IGNORECASE),
+    re.compile(r"test\s+me\s+(?:on|about)\s+(.+)", re.IGNORECASE),
+)
 
 # System prompt for normal conversational tutoring mode.
 SYSTEM_PROMPT = """You are Saivo, a friendly and smart AI tutor built to help students learn effectively.
@@ -218,8 +223,94 @@ def _fallback_quiz_payload(topic: str) -> dict[str, Any]:
                 "correct_option": "C",
                 "explanation": "Active recall and spaced repetition improve long-term understanding.",
             },
+            {
+                "id": "q4",
+                "question": f"For stronger understanding of {topic}, what is the most effective study habit?",
+                "options": {
+                    "A": "Practice in small regular sessions.",
+                    "B": "Study only when deadlines are close.",
+                    "C": "Skip revision after class.",
+                    "D": "Rely only on videos without practice.",
+                },
+                "correct_option": "A",
+                "explanation": "Regular spaced practice builds durable understanding.",
+            },
+            {
+                "id": "q5",
+                "question": f"Which approach best helps apply {topic} in exams or projects?",
+                "options": {
+                    "A": "Memorize answers without understanding.",
+                    "B": "Solve varied problems and review mistakes.",
+                    "C": "Avoid difficult questions completely.",
+                    "D": "Ignore feedback after attempts.",
+                },
+                "correct_option": "B",
+                "explanation": "Varied practice and error review improve application skills.",
+            },
         ],
     }
+
+
+def _extract_quiz_topic(message: str) -> str | None:
+    lowered = message.lower()
+    for pattern in QUIZ_TOPIC_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+
+        candidate = match.group(1).strip(" .,!?:;\n\t")
+        if candidate:
+            return candidate[:120]
+
+    # Handle simple forms like "quiz on photosynthesis"
+    on_match = re.search(r"\b(?:quiz|test)\b\s+(?:on|about)\s+(.+)", message, re.IGNORECASE)
+    if on_match:
+        candidate = on_match.group(1).strip(" .,!?:;\n\t")
+        if candidate:
+            return candidate[:120]
+
+    return None
+
+
+def _extract_refusal_text(raw_reply: str) -> str | None:
+    stripped = raw_reply.strip()
+    if not stripped:
+        return None
+
+    lowered = stripped.lower()
+    refusal_hints = (
+        "not study",
+        "not education",
+        "non-educational",
+        "outside educational",
+        "outside study",
+        "i can only help with educational",
+        "i can only create quizzes on educational",
+        "please provide an educational",
+    )
+
+    if any(hint in lowered for hint in refusal_hints):
+        return stripped
+
+    return None
+
+
+def _convert_option_list_to_map(option_list: list[Any]) -> dict[str, str]:
+    options: dict[str, str] = {}
+    for index, raw_option in enumerate(option_list[:4]):
+        if not isinstance(raw_option, str):
+            continue
+
+        label = OPTION_KEYS[index]
+        option_text = raw_option.strip()
+        prefix = f"{label}."
+        if option_text[:2].upper() == prefix:
+            option_text = option_text[2:].strip()
+
+        if option_text:
+            options[label] = option_text
+
+    return options
 
 
 def _normalize_quiz_payload(payload: dict[str, Any] | None, topic: str) -> dict[str, Any]:
@@ -227,21 +318,25 @@ def _normalize_quiz_payload(payload: dict[str, Any] | None, topic: str) -> dict[
     if not isinstance(payload, dict):
         return fallback
 
+    if str(payload.get("type", "")).strip().lower() != "quiz":
+        return fallback
+
     raw_questions = payload.get("questions")
-    if not isinstance(raw_questions, list) or len(raw_questions) < 3:
+    if not isinstance(raw_questions, list) or len(raw_questions) < 5:
         return fallback
 
     normalized_questions: list[dict[str, Any]] = []
-    for index, raw_question in enumerate(raw_questions[:3], start=1):
+    for index, raw_question in enumerate(raw_questions[:5], start=1):
         if not isinstance(raw_question, dict):
             continue
 
         question_text = str(raw_question.get("question", "")).strip()
-        explanation = str(raw_question.get("explanation", "")).strip()
 
         raw_options = raw_question.get("options", {})
         options: dict[str, str] = {}
-        if isinstance(raw_options, dict):
+        if isinstance(raw_options, list):
+            options = _convert_option_list_to_map(raw_options)
+        elif isinstance(raw_options, dict):
             for key in OPTION_KEYS:
                 value = raw_options.get(key)
                 if isinstance(value, str) and value.strip():
@@ -250,7 +345,9 @@ def _normalize_quiz_payload(payload: dict[str, Any] | None, topic: str) -> dict[
         if len(options) != 4 or not question_text:
             continue
 
-        correct_option = _normalize_option_label(str(raw_question.get("correct_option", "A")))
+        correct_option = _normalize_option_label(
+            str(raw_question.get("correct", raw_question.get("correct_option", "A")))
+        )
         if correct_option not in options:
             correct_option = "A"
 
@@ -260,11 +357,11 @@ def _normalize_quiz_payload(payload: dict[str, Any] | None, topic: str) -> dict[
                 "question": question_text,
                 "options": options,
                 "correct_option": correct_option,
-                "explanation": explanation or "This option best matches the concept being tested.",
+                "explanation": "This option best matches the concept being tested.",
             }
         )
 
-    if len(normalized_questions) != 3:
+    if len(normalized_questions) != 5:
         return fallback
 
     topic_value = str(payload.get("topic", "")).strip() or topic
@@ -411,31 +508,32 @@ async def generate_quiz_payload(
     difficulty_level: str,
     session_subject: str = "Anyone",
 ) -> dict[str, Any]:
-    """Generate a structured 3-question MCQ quiz payload."""
+    """Generate a structured 5-question MCQ quiz payload."""
     normalized_difficulty = _normalize_difficulty(difficulty_level)
     normalized_subject = _normalize_session_subject(session_subject)
-    topic = _infer_topic_from_context(context)
+    topic = _extract_quiz_topic(message) or _infer_topic_from_context(context)
     runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
 
     quiz_system_prompt = (
         f"{SYSTEM_PROMPT}\n\n"
         f"{runtime_instructions}\n\n"
-        "Return ONLY valid JSON. Do not add markdown fences.\n"
-        "JSON schema:\n"
+        "You are creating quizzes for study and education use only.\n"
+        "Step 1: Verify whether the requested topic is study or education related.\n"
+        "If it is NOT study/education related, politely refuse in one short sentence.\n"
+        "Step 2: If the topic is valid, return the quiz in this exact JSON format and nothing else:\n"
         "{\n"
         "  \"type\": \"quiz\",\n"
-        "  \"topic\": \"string\",\n"
+        "  \"topic\": \"topic name\",\n"
         "  \"questions\": [\n"
         "    {\n"
-        "      \"id\": \"q1\",\n"
-        "      \"question\": \"string\",\n"
-        "      \"options\": {\"A\": \"string\", \"B\": \"string\", \"C\": \"string\", \"D\": \"string\"},\n"
-        "      \"correct_option\": \"A|B|C|D\",\n"
-        "      \"explanation\": \"string\"\n"
+        "      \"question\": \"question text\",\n"
+        "      \"options\": [\"A. option1\", \"B. option2\", \"C. option3\", \"D. option4\"],\n"
+        "      \"correct\": \"A\"\n"
         "    }\n"
         "  ]\n"
         "}\n"
-        "Rules: exactly 3 questions, each with 4 options A-D, one correct option, and one explanation."
+        "Generate exactly 5 questions.\n"
+        "Return only JSON for valid topics, with no markdown and no extra text."
     )
 
     quiz_user_prompt = (
@@ -452,7 +550,34 @@ async def generate_quiz_payload(
         temperature=0.5,
     )
 
-    parsed = _parse_json_object(raw_reply) if raw_reply else None
+    if not raw_reply:
+        return _fallback_quiz_payload(topic)
+
+    parsed = _parse_json_object(raw_reply)
+    if not parsed:
+        refusal = _extract_refusal_text(raw_reply)
+        if refusal:
+            return {
+                "type": "text",
+                "content": refusal,
+            }
+
+        if "{" not in raw_reply and "[" not in raw_reply:
+            return {
+                "type": "text",
+                "content": raw_reply.strip(),
+            }
+
+        return _fallback_quiz_payload(topic)
+
+    if str(parsed.get("type", "")).strip().lower() != "quiz":
+        refusal = str(parsed.get("content", "")).strip()
+        if refusal:
+            return {
+                "type": "text",
+                "content": refusal,
+            }
+
     return _normalize_quiz_payload(parsed, topic)
 
 

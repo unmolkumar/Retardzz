@@ -750,7 +750,28 @@ function setupUserMessageCopyTrigger(contentEl) {
 	});
 }
 
-function showThinkingIndicator() {
+function isQuizRequestPrompt(content) {
+	if (typeof content !== "string") {
+		return false;
+	}
+
+	const lowered = content.trim().toLowerCase();
+	if (!lowered) {
+		return false;
+	}
+
+	if (lowered.includes("quiz me") || lowered.includes("test me")) {
+		return true;
+	}
+
+	if (/\b(?:make|create|generate|give)\b.*\bquiz\b/.test(lowered)) {
+		return true;
+	}
+
+	return /\bquiz\b\s+(?:on|about)\b/.test(lowered);
+}
+
+function showThinkingIndicator(mode = "normal") {
 	removeEmptyState();
 
 	const wrapper = document.createElement("div");
@@ -768,6 +789,23 @@ function showThinkingIndicator() {
 
 	const thinkingBox = document.createElement("div");
 	thinkingBox.classList.add("thinking-box");
+	if (mode === "quiz") {
+		thinkingBox.classList.add("thinking-box-quiz");
+
+		const quizLabel = document.createElement("div");
+		quizLabel.classList.add("thinking-quiz-label");
+		quizLabel.textContent = "Generating Quiz...";
+		thinkingBox.appendChild(quizLabel);
+
+		const bars = document.createElement("div");
+		bars.classList.add("quiz-thinking-bars");
+		for (let i = 0; i < 5; i++) {
+			const bar = document.createElement("span");
+			bar.classList.add("quiz-thinking-bar");
+			bars.appendChild(bar);
+		}
+		thinkingBox.appendChild(bars);
+	}
 
 	const dotsContainer = document.createElement("div");
 	dotsContainer.classList.add("thinking-dots");
@@ -1483,12 +1521,42 @@ async function loadMessages() {
 	}
 
 	try {
-		const messages = await apiFetch(`/messages/${state.activeChatId}`);
+		const [messagesPayload, quizzesPayload] = await Promise.all([
+			apiFetch(`/messages/${state.activeChatId}`),
+			apiFetch(`/quizzes/chat/${state.activeChatId}`).catch(() => ({ quizzes: [] })),
+		]);
+
+		const allMessages = Array.isArray(messagesPayload) ? [...messagesPayload] : [];
+		allMessages.sort((a, b) => {
+			const idxA = Number.isInteger(a && a.message_index) ? a.message_index : 0;
+			const idxB = Number.isInteger(b && b.message_index) ? b.message_index : 0;
+			return idxA - idxB;
+		});
+
+		const rawQuizzes = Array.isArray(quizzesPayload && quizzesPayload.quizzes)
+			? quizzesPayload.quizzes
+			: [];
+		const quizzes = rawQuizzes
+			.map((rawQuiz) => normalizeStoredQuizRecord(rawQuiz))
+			.filter((quiz) => !!quiz);
+		const quizzesByIndex = buildQuizIndexMap(quizzes);
+
 		messagesContainer.innerHTML = "";
 
-		if (Array.isArray(messages) && messages.length > 0) {
+		if (allMessages.length > 0 || quizzes.length > 0) {
 			hideWelcomeScreen();  // Hide welcome when chat has messages
-			messages.forEach((msg) => appendMessage(msg, false));
+			allMessages.forEach((msg, fallbackIndex) => {
+				const messageIndex = Number.isInteger(msg && msg.message_index)
+					? msg.message_index
+					: fallbackIndex;
+
+				if (!isQuizSummaryMessage(msg)) {
+					appendMessage(msg, false);
+				}
+
+				renderQuizzesAtMessageIndex(quizzesByIndex, messageIndex, null, false);
+			});
+
 			chatArea.scrollTop = chatArea.scrollHeight;
 		} else {
 			showWelcomeScreen();  // Show welcome when chat has no messages
@@ -1555,7 +1623,8 @@ async function sendMessage(content) {
 	chatArea.scrollTop = chatArea.scrollHeight;
 
 	const thinkingStartTime = Date.now();
-	const thinkingIndicator = showThinkingIndicator();
+	const thinkingMode = isQuizRequestPrompt(trimmedContent) ? "quiz" : "normal";
+	showThinkingIndicator(thinkingMode);
 
 	try {
 		const response = await apiFetch("/chat/send", {
@@ -1576,7 +1645,7 @@ async function sendMessage(content) {
 
 		setTimeout(() => {
 			removeThinkingIndicator();
-			setTimeout(() => {
+			setTimeout(async () => {
 				if (!response) return;
 
 				const responseLevel = response.response_level || (difficultyAtSend !== "Neutral" ? difficultyAtSend : null);
@@ -1594,15 +1663,29 @@ async function sendMessage(content) {
 				}
 
 				const responseType = response.type || "text";
+				const quizPayload = extractQuizPayloadFromResponse(response);
 
-				if (responseType === "quiz" && response.quiz) {
-					// --- QUIZ RESPONSE ---
+				if (quizPayload) {
+					// --- QUIZ RESPONSE (LAUNCHER CARD) ---
 					hideWelcomeScreen();
 					removeEmptyState();
 					isGenerating = false;
 					generatingChatId = null;
 					hideStopButton();
-					renderQuizCard(response.quiz, responseLevel);
+
+					let persistedQuizMeta = null;
+					try {
+						persistedQuizMeta = await saveQuizForChat(quizPayload, response);
+					} catch (persistError) {
+						console.error("Failed to persist quiz:", persistError);
+					}
+
+					renderQuizLauncherCard(
+						quizPayload,
+						responseLevel,
+						persistedQuizMeta || {},
+						true,
+					);
 					chatArea.scrollTop = chatArea.scrollHeight;
 
 				} else if (responseType === "summary" && response.summary) {
@@ -1660,10 +1743,749 @@ async function sendMessage(content) {
 // ========================
 
 /**
- * Renders a quiz card with clickable MCQ option buttons.
- * @param {Object} quizData - { type, topic, questions: [{ id, question, options: {A,B,C,D}, correct_option, explanation }] }
+ * Attempts to parse quiz JSON from assistant content.
  */
-function renderQuizCard(quizData, responseLevel = null) {
+function parseQuizJsonContent(content) {
+	if (typeof content !== "string") {
+		return null;
+	}
+
+	const trimmed = content.trim();
+	if (!trimmed) {
+		return null;
+	}
+
+	let candidate = trimmed;
+	const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+	if (fenced && fenced[1]) {
+		candidate = fenced[1].trim();
+	}
+
+	try {
+		const parsed = JSON.parse(candidate);
+		return normalizeQuizPayload(parsed);
+	} catch (_error) {
+		return null;
+	}
+}
+
+function normalizeQuizOptions(options) {
+	const normalized = {};
+	const optionKeys = ["A", "B", "C", "D"];
+
+	if (Array.isArray(options)) {
+		optionKeys.forEach((key, index) => {
+			const entry = options[index];
+			if (typeof entry !== "string") return;
+
+			let text = entry.trim();
+			const prefixRegex = new RegExp(`^${key}[\\.\\)\\-:]?\\s*`, "i");
+			text = text.replace(prefixRegex, "").trim();
+			if (text) {
+				normalized[key] = text;
+			}
+		});
+		return normalized;
+	}
+
+	if (options && typeof options === "object") {
+		optionKeys.forEach((key) => {
+			const value = options[key] || options[key.toLowerCase()];
+			if (typeof value === "string" && value.trim()) {
+				normalized[key] = value.trim();
+			}
+		});
+	}
+
+	return normalized;
+}
+
+function normalizeQuizPayload(rawQuiz) {
+	if (!rawQuiz || typeof rawQuiz !== "object") {
+		return null;
+	}
+
+	const type = String(rawQuiz.type || "").trim().toLowerCase();
+	if (type !== "quiz") {
+		return null;
+	}
+
+	const topic = typeof rawQuiz.topic === "string" && rawQuiz.topic.trim()
+		? rawQuiz.topic.trim()
+		: "General Knowledge";
+
+	if (!Array.isArray(rawQuiz.questions) || rawQuiz.questions.length === 0) {
+		return null;
+	}
+
+	const normalizedQuestions = [];
+	rawQuiz.questions.forEach((rawQuestion, index) => {
+		if (!rawQuestion || typeof rawQuestion !== "object") {
+			return;
+		}
+
+		const questionText = typeof rawQuestion.question === "string"
+			? rawQuestion.question.trim()
+			: "";
+		const options = normalizeQuizOptions(rawQuestion.options);
+		if (!questionText || Object.keys(options).length !== 4) {
+			return;
+		}
+
+		const rawCorrect = String(rawQuestion.correct || rawQuestion.correct_option || "A").trim().toUpperCase();
+		const correctOption = ["A", "B", "C", "D"].includes(rawCorrect.charAt(0))
+			? rawCorrect.charAt(0)
+			: "A";
+
+		normalizedQuestions.push({
+			id: typeof rawQuestion.id === "string" && rawQuestion.id.trim() ? rawQuestion.id.trim() : `q${index + 1}`,
+			topic,
+			question: questionText,
+			options,
+			correct_option: correctOption,
+			explanation: typeof rawQuestion.explanation === "string" ? rawQuestion.explanation.trim() : "",
+		});
+	});
+
+	if (normalizedQuestions.length === 0) {
+		return null;
+	}
+
+	return {
+		type: "quiz",
+		topic,
+		questions: normalizedQuestions,
+	};
+}
+
+function extractQuizPayloadFromResponse(response) {
+	if (!response || typeof response !== "object") {
+		return null;
+	}
+
+	if (response.quiz) {
+		const normalizedQuiz = normalizeQuizPayload(response.quiz);
+		if (normalizedQuiz) {
+			return normalizedQuiz;
+		}
+	}
+
+	if (typeof response.content === "string") {
+		return parseQuizJsonContent(response.content);
+	}
+
+	return null;
+}
+
+function isQuizSummaryText(content) {
+	if (typeof content !== "string") {
+		return false;
+	}
+	return content.trim().startsWith("📝 Quiz:");
+}
+
+function isQuizSummaryMessage(message) {
+	if (!message || typeof message !== "object") {
+		return false;
+	}
+	return message.role === "assistant" && isQuizSummaryText(message.content);
+}
+
+function buildQuizSavePayload(quizData) {
+	const normalizedQuiz = normalizeQuizPayload(quizData);
+	if (!normalizedQuiz) {
+		return null;
+	}
+
+	const questions = normalizedQuiz.questions.map((question) => ({
+		question: question.question,
+		options: {
+			A: question.options.A,
+			B: question.options.B,
+			C: question.options.C,
+			D: question.options.D,
+		},
+		correct_answer: question.correct_option,
+		explanation: question.explanation || "",
+	}));
+
+	return {
+		topic: normalizedQuiz.topic,
+		questions,
+	};
+}
+
+async function saveQuizForChat(quizData, responsePayload) {
+	if (!state.userId || !state.activeChatId) {
+		return null;
+	}
+
+	const quizSavePayload = buildQuizSavePayload(quizData);
+	if (!quizSavePayload) {
+		return null;
+	}
+
+	const responseMessageIndex = responsePayload && responsePayload.message_index;
+	const messageIndex = Number.isInteger(responseMessageIndex)
+		? responseMessageIndex
+		: null;
+
+	if (messageIndex === null || messageIndex < 0) {
+		console.error("Cannot persist quiz without a valid message_index from backend response");
+		return null;
+	}
+
+	const savedQuiz = await apiFetch("/quizzes", {
+		method: "POST",
+		body: {
+			user_id: state.userId,
+			chat_id: state.activeChatId,
+			message_index: messageIndex,
+			topic: quizSavePayload.topic,
+			questions: quizSavePayload.questions,
+		},
+	});
+
+	if (!savedQuiz || typeof savedQuiz !== "object") {
+		return null;
+	}
+
+	return {
+		quizId: savedQuiz.quiz_id || null,
+		messageIndex: typeof savedQuiz.message_index === "number" ? savedQuiz.message_index : messageIndex,
+	};
+}
+
+function normalizeStoredQuizRecord(rawQuiz) {
+	if (!rawQuiz || typeof rawQuiz !== "object") {
+		return null;
+	}
+
+	const rawQuestions = Array.isArray(rawQuiz.questions) ? rawQuiz.questions : [];
+	const preparedQuestions = rawQuestions.map((question, index) => ({
+		id: typeof question.id === "string" ? question.id : `q${index + 1}`,
+		question: question.question,
+		options: question.options,
+		correct_option: question.correct_answer || question.correct || question.correct_option || "A",
+		explanation: question.explanation || "",
+	}));
+
+	const normalizedQuiz = normalizeQuizPayload({
+		type: "quiz",
+		topic: rawQuiz.topic,
+		questions: preparedQuestions,
+	});
+
+	if (!normalizedQuiz) {
+		return null;
+	}
+
+	return {
+		quiz_id: typeof rawQuiz.quiz_id === "string" ? rawQuiz.quiz_id : "",
+		message_index: Number.isInteger(rawQuiz.message_index) ? rawQuiz.message_index : 0,
+		quiz: normalizedQuiz,
+	};
+}
+
+function buildQuizIndexMap(quizzes) {
+	const quizMap = new Map();
+	quizzes.forEach((quizRecord) => {
+		const index = quizRecord.message_index;
+		if (!quizMap.has(index)) {
+			quizMap.set(index, []);
+		}
+		quizMap.get(index).push(quizRecord);
+	});
+	return quizMap;
+}
+
+function renderQuizzesAtMessageIndex(quizMap, messageIndex, responseLevel = null, autoScroll = false) {
+	const quizRecords = quizMap.get(messageIndex) || [];
+	quizRecords.forEach((quizRecord) => {
+		renderQuizLauncherCard(
+			quizRecord.quiz,
+			responseLevel,
+			{
+				quizId: quizRecord.quiz_id,
+				messageIndex: quizRecord.message_index,
+			},
+			autoScroll,
+		);
+	});
+}
+
+const quizModalState = {
+	overlay: null,
+	topic: null,
+	contentView: null,
+	counter: null,
+	questionText: null,
+	options: null,
+	tipBox: null,
+	scoreBox: null,
+	prevBtn: null,
+	nextBtn: null,
+	closeFooterBtn: null,
+	quizData: null,
+	quizId: null,
+	currentIndex: 0,
+	answers: {},
+	attemptsByQuestion: {},
+	tips: {},
+};
+
+function ensureQuizModal() {
+	if (quizModalState.overlay) {
+		return quizModalState;
+	}
+
+	const overlay = document.createElement("div");
+	overlay.id = "quiz-modal-overlay";
+	overlay.className = "quiz-modal-overlay";
+	overlay.setAttribute("aria-hidden", "true");
+	overlay.setAttribute("role", "dialog");
+
+	const modal = document.createElement("div");
+	modal.className = "quiz-modal";
+
+	const header = document.createElement("div");
+	header.className = "quiz-modal-header";
+
+	const titleWrap = document.createElement("div");
+	titleWrap.className = "quiz-modal-title-wrap";
+
+	const title = document.createElement("h3");
+	title.className = "quiz-modal-title";
+	title.textContent = "Quiz";
+	titleWrap.appendChild(title);
+
+	const topic = document.createElement("div");
+	topic.className = "quiz-modal-topic";
+	topic.textContent = "General Knowledge";
+	titleWrap.appendChild(topic);
+	header.appendChild(titleWrap);
+
+	const closeBtn = document.createElement("button");
+	closeBtn.type = "button";
+	closeBtn.className = "quiz-modal-close";
+	closeBtn.textContent = "Close";
+	header.appendChild(closeBtn);
+
+	const contentView = document.createElement("div");
+	contentView.className = "quiz-modal-content";
+
+	const counter = document.createElement("div");
+	counter.className = "quiz-modal-counter";
+	contentView.appendChild(counter);
+
+	const questionText = document.createElement("div");
+	questionText.className = "quiz-modal-question-text";
+	contentView.appendChild(questionText);
+
+	const options = document.createElement("div");
+	options.className = "quiz-modal-options";
+	contentView.appendChild(options);
+
+	const tipBox = document.createElement("div");
+	tipBox.className = "quiz-modal-tip";
+	tipBox.hidden = true;
+	contentView.appendChild(tipBox);
+
+	const scoreBox = document.createElement("div");
+	scoreBox.className = "quiz-modal-score";
+	scoreBox.hidden = true;
+	contentView.appendChild(scoreBox);
+
+	const footer = document.createElement("div");
+	footer.className = "quiz-modal-footer";
+
+	const prevBtn = document.createElement("button");
+	prevBtn.type = "button";
+	prevBtn.className = "quiz-modal-nav-btn";
+	prevBtn.textContent = "Previous";
+	footer.appendChild(prevBtn);
+
+	const nextBtn = document.createElement("button");
+	nextBtn.type = "button";
+	nextBtn.className = "quiz-modal-nav-btn";
+	nextBtn.textContent = "Next";
+	footer.appendChild(nextBtn);
+
+	const closeFooterBtn = document.createElement("button");
+	closeFooterBtn.type = "button";
+	closeFooterBtn.className = "quiz-modal-close-footer";
+	closeFooterBtn.textContent = "Close";
+	footer.appendChild(closeFooterBtn);
+
+	contentView.appendChild(footer);
+
+	modal.appendChild(header);
+	modal.appendChild(contentView);
+	overlay.appendChild(modal);
+	document.body.appendChild(overlay);
+
+	quizModalState.overlay = overlay;
+	quizModalState.topic = topic;
+	quizModalState.contentView = contentView;
+	quizModalState.counter = counter;
+	quizModalState.questionText = questionText;
+	quizModalState.options = options;
+	quizModalState.tipBox = tipBox;
+	quizModalState.scoreBox = scoreBox;
+	quizModalState.prevBtn = prevBtn;
+	quizModalState.nextBtn = nextBtn;
+	quizModalState.closeFooterBtn = closeFooterBtn;
+
+	overlay.addEventListener("click", (event) => {
+		if (event.target === overlay) {
+			closeQuizModal();
+		}
+	});
+
+	closeBtn.addEventListener("click", closeQuizModal);
+	closeFooterBtn.addEventListener("click", closeQuizModal);
+
+	prevBtn.addEventListener("click", () => {
+		if (!quizModalState.quizData || quizModalState.currentIndex <= 0) {
+			return;
+		}
+		quizModalState.currentIndex -= 1;
+		renderQuizModalQuestion();
+	});
+
+	nextBtn.addEventListener("click", () => {
+		if (!quizModalState.quizData) {
+			return;
+		}
+		const maxIndex = quizModalState.quizData.questions.length - 1;
+		if (quizModalState.currentIndex >= maxIndex) {
+			return;
+		}
+		quizModalState.currentIndex += 1;
+		renderQuizModalQuestion();
+	});
+
+	return quizModalState;
+}
+
+function handleQuizModalKeydown(event) {
+	if (event.key === "Escape" && quizModalState.overlay && quizModalState.overlay.classList.contains("active")) {
+		event.preventDefault();
+		closeQuizModal();
+	}
+}
+
+function computeQuizScore(quizData, answers) {
+	if (!quizData || !Array.isArray(quizData.questions)) {
+		return { correct: 0, wrong: 0 };
+	}
+
+	let correct = 0;
+	let wrong = 0;
+	quizData.questions.forEach((question, index) => {
+		const selected = answers[index];
+		if (!selected) {
+			return;
+		}
+
+		if (selected === question.correct_option) {
+			correct += 1;
+		} else {
+			wrong += 1;
+		}
+	});
+
+	return { correct, wrong };
+}
+
+function normalizeAttemptRecord(rawAttempt) {
+	if (!rawAttempt || typeof rawAttempt !== "object") {
+		return null;
+	}
+
+	const questionIndex = Number(rawAttempt.question_index);
+	const selectedOption = String(rawAttempt.selected_option || "").trim().toUpperCase();
+	if (!Number.isInteger(questionIndex) || questionIndex < 0 || !selectedOption) {
+		return null;
+	}
+
+	return {
+		question_index: questionIndex,
+		selected_option: selectedOption.charAt(0),
+		is_correct: Boolean(rawAttempt.is_correct),
+	};
+}
+
+function buildLatestAttemptMap(rawAttempts) {
+	const latestMap = {};
+	if (!Array.isArray(rawAttempts)) {
+		return latestMap;
+	}
+
+	rawAttempts.forEach((rawAttempt) => {
+		const attempt = normalizeAttemptRecord(rawAttempt);
+		if (!attempt) {
+			return;
+		}
+		latestMap[attempt.question_index] = attempt;
+	});
+
+	return latestMap;
+}
+
+function getQuestionAttempt(questionIndex) {
+	return quizModalState.answers[questionIndex] || quizModalState.attemptsByQuestion[questionIndex] || null;
+}
+
+async function loadQuizAttempts(quizId) {
+	if (!quizId) {
+		quizModalState.attemptsByQuestion = {};
+		return;
+	}
+
+	try {
+		const result = await apiFetch(`/quizzes/${quizId}/attempts`);
+		const latestMap = buildLatestAttemptMap(result && result.attempts);
+		Object.keys(latestMap).forEach((questionIndex) => {
+			if (quizModalState.answers[questionIndex]) {
+				return;
+			}
+			quizModalState.attemptsByQuestion[questionIndex] = latestMap[questionIndex];
+		});
+	} catch (error) {
+		console.error("Failed to load quiz attempts:", error);
+	}
+}
+
+async function saveQuizAttempt(quizId, questionIndex, selectedOption, isCorrect) {
+	if (!quizId) {
+		return;
+	}
+
+	try {
+		await apiFetch("/quizzes/attempts", {
+			method: "POST",
+			body: {
+				quiz_id: quizId,
+				question_index: questionIndex,
+				selected_option: selectedOption,
+				is_correct: isCorrect,
+			},
+		});
+	} catch (error) {
+		console.error("Failed to save quiz attempt:", error);
+	}
+}
+
+function buildQuizTipMessage(question, feedbackText) {
+	const correctKey = question.correct_option || "A";
+	const correctText = question.options && question.options[correctKey] ? question.options[correctKey] : "";
+	const whyText = (feedbackText || question.explanation || "Review each option carefully and focus on the core concept.").trim();
+
+	return `Correct answer: ${correctKey}. ${correctText}\nWhy: ${whyText}`;
+}
+
+async function fetchQuizModalTip(questionIndex, question, selectedKey) {
+	let feedbackText = "";
+	try {
+		const result = await apiFetch("/chat/quiz-answer", {
+			method: "POST",
+			body: {
+				chat_id: state.activeChatId,
+				user_id: state.userId,
+				topic: question.topic || (quizModalState.quizData && quizModalState.quizData.topic) || "the topic",
+				question: question.question,
+				options: question.options,
+				selected_option: selectedKey,
+				correct_option: question.correct_option,
+				explanation: question.explanation || "",
+				difficulty_level: state.difficultyLevel,
+				session_subject: normalizeSessionSubject(state.sessionSubject),
+			},
+		});
+		feedbackText = result && typeof result.feedback === "string" ? result.feedback : "";
+	} catch (_error) {
+		feedbackText = "";
+	}
+
+	quizModalState.tips[questionIndex] = {
+		loading: false,
+		text: buildQuizTipMessage(question, feedbackText),
+	};
+
+	if (quizModalState.currentIndex === questionIndex) {
+		renderQuizModalQuestion();
+	}
+}
+
+function renderQuizModalQuestion() {
+	if (!quizModalState.quizData || !quizModalState.options || !quizModalState.questionText || !quizModalState.counter) {
+		return;
+	}
+
+	const questions = quizModalState.quizData.questions;
+	const index = quizModalState.currentIndex;
+	const question = questions[index];
+	if (!question) {
+		return;
+	}
+
+	quizModalState.counter.textContent = `Question ${index + 1} of ${questions.length}`;
+	quizModalState.questionText.textContent = question.question;
+	quizModalState.options.innerHTML = "";
+
+	const activeAttempt = getQuestionAttempt(index);
+	const tipState = quizModalState.tips[index] || null;
+	["A", "B", "C", "D"].forEach((key) => {
+		const optionText = question.options[key];
+		if (!optionText) {
+			return;
+		}
+
+		const optionBtn = document.createElement("button");
+		optionBtn.type = "button";
+		optionBtn.className = "quiz-modal-option";
+
+		const label = document.createElement("span");
+		label.className = "quiz-modal-option-label";
+		label.textContent = key;
+		optionBtn.appendChild(label);
+
+		const text = document.createElement("span");
+		text.className = "quiz-modal-option-text";
+		text.textContent = optionText;
+		optionBtn.appendChild(text);
+
+		if (activeAttempt) {
+			if (key === question.correct_option) {
+				optionBtn.classList.add("correct");
+			} else if (key === activeAttempt.selected_option && !activeAttempt.is_correct) {
+				optionBtn.classList.add("wrong");
+			} else {
+				optionBtn.classList.add("muted");
+			}
+		}
+
+		optionBtn.addEventListener("click", () => {
+			const isCorrect = key === question.correct_option;
+			const currentAttempt = {
+				question_index: index,
+				selected_option: key,
+				is_correct: isCorrect,
+			};
+
+			quizModalState.answers[index] = currentAttempt;
+			quizModalState.attemptsByQuestion[index] = currentAttempt;
+			saveQuizAttempt(quizModalState.quizId, index, key, isCorrect);
+
+			if (!isCorrect) {
+				quizModalState.tips[index] = { loading: true, text: "" };
+				fetchQuizModalTip(index, question, key);
+			} else {
+				quizModalState.tips[index] = null;
+			}
+
+			renderQuizModalQuestion();
+		});
+
+		quizModalState.options.appendChild(optionBtn);
+	});
+
+	if (quizModalState.tipBox) {
+		const isWrong = !!activeAttempt && !activeAttempt.is_correct;
+		if (!isWrong) {
+			quizModalState.tipBox.hidden = true;
+			quizModalState.tipBox.innerHTML = "";
+		} else {
+			quizModalState.tipBox.hidden = false;
+			if (tipState && tipState.loading) {
+				quizModalState.tipBox.innerHTML = '<div class="quiz-modal-tip-title">Tip</div><div class="quiz-modal-tip-text">Checking the best explanation...</div>';
+			} else {
+				const finalTip = tipState && tipState.text ? tipState.text : buildQuizTipMessage(question, "");
+				const safeTip = escapeHtml(finalTip).replace(/\n/g, "<br>");
+				quizModalState.tipBox.innerHTML = `<div class="quiz-modal-tip-title">Tip</div><div class="quiz-modal-tip-text">${safeTip}</div>`;
+			}
+		}
+	}
+
+	if (quizModalState.scoreBox) {
+		if (index === questions.length - 1) {
+			const combinedAnswers = {
+				...quizModalState.attemptsByQuestion,
+				...quizModalState.answers,
+			};
+			const score = computeQuizScore(quizModalState.quizData, combinedAnswers);
+			quizModalState.scoreBox.hidden = false;
+			quizModalState.scoreBox.innerHTML = (
+				`<div class="quiz-modal-score-title">Final Score</div>` +
+				`<div class="quiz-modal-score-values">` +
+				`<span class="score-correct">${score.correct} Correct</span>` +
+				`<span class="score-wrong">${score.wrong} Wrong</span>` +
+				`</div>`
+			);
+		} else {
+			quizModalState.scoreBox.hidden = true;
+			quizModalState.scoreBox.innerHTML = "";
+		}
+	}
+
+	if (quizModalState.prevBtn) {
+		quizModalState.prevBtn.disabled = index === 0;
+	}
+	if (quizModalState.nextBtn) {
+		quizModalState.nextBtn.disabled = index === questions.length - 1;
+	}
+}
+
+function openQuizModal(quizData, metadata = {}) {
+	const normalizedQuiz = normalizeQuizPayload(quizData);
+	if (!normalizedQuiz) {
+		return;
+	}
+
+	ensureQuizModal();
+
+	quizModalState.quizData = normalizedQuiz;
+	quizModalState.quizId = typeof metadata.quizId === "string" && metadata.quizId ? metadata.quizId : null;
+	quizModalState.currentIndex = 0;
+	quizModalState.answers = {};
+	quizModalState.attemptsByQuestion = {};
+	quizModalState.tips = {};
+
+	if (quizModalState.topic) {
+		quizModalState.topic.textContent = normalizedQuiz.topic;
+	}
+
+	if (quizModalState.overlay) {
+		quizModalState.overlay.classList.add("active");
+		quizModalState.overlay.setAttribute("aria-hidden", "false");
+	}
+
+	document.body.classList.add("quiz-modal-open");
+	document.addEventListener("keydown", handleQuizModalKeydown);
+	renderQuizModalQuestion();
+
+	loadQuizAttempts(quizModalState.quizId).then(() => {
+		renderQuizModalQuestion();
+	});
+}
+
+function closeQuizModal() {
+	if (quizModalState.overlay) {
+		quizModalState.overlay.classList.remove("active");
+		quizModalState.overlay.setAttribute("aria-hidden", "true");
+	}
+
+	document.body.classList.remove("quiz-modal-open");
+	document.removeEventListener("keydown", handleQuizModalKeydown);
+}
+
+function createQuizCardElement(quizData, responseLevel = null) {
+	const normalizedQuiz = normalizeQuizPayload(quizData);
+	if (!normalizedQuiz) {
+		return null;
+	}
+
 	const wrapper = document.createElement("div");
 	wrapper.classList.add("message", "ai-message");
 
@@ -1698,13 +2520,13 @@ function renderQuizCard(quizData, responseLevel = null) {
 	headerText.appendChild(title);
 	const topic = document.createElement("div");
 	topic.classList.add("quiz-card-topic");
-	topic.textContent = quizData.topic || "General Knowledge";
+	topic.textContent = normalizedQuiz.topic;
 	headerText.appendChild(topic);
 	header.appendChild(headerText);
 	card.appendChild(header);
 
 	// Questions
-	const questions = quizData.questions || [];
+	const questions = normalizedQuiz.questions || [];
 	questions.forEach((q, qIndex) => {
 		const questionDiv = document.createElement("div");
 		questionDiv.classList.add("quiz-question");
@@ -1753,8 +2575,122 @@ function renderQuizCard(quizData, responseLevel = null) {
 	});
 
 	wrapper.appendChild(card);
+	return wrapper;
+}
+
+/**
+ * Renders a quiz launcher card with an Open Quiz action and stores quiz payload on the card.
+ */
+function renderQuizLauncherCard(quizData, responseLevel = null, metadata = {}, autoScroll = true) {
+	const normalizedQuiz = normalizeQuizPayload(quizData);
+	if (!normalizedQuiz) {
+		return null;
+	}
+
+	const wrapper = document.createElement("div");
+	wrapper.classList.add("message", "ai-message");
+
+	const avatar = document.createElement("div");
+	avatar.classList.add("message-avatar");
+	const logo = document.createElement("img");
+	logo.src = "assests/logo.png";
+	logo.alt = "Saivo";
+	logo.classList.add("bot-logo");
+	avatar.appendChild(logo);
+	wrapper.appendChild(avatar);
+
+	const card = document.createElement("div");
+	card.classList.add("quiz-card", "quiz-launcher-card");
+	const levelBadge = createResponseLevelBadge(responseLevel);
+	if (levelBadge) {
+		card.appendChild(levelBadge);
+	}
+
+	const header = document.createElement("div");
+	header.classList.add("quiz-card-header");
+	const icon = document.createElement("div");
+	icon.classList.add("quiz-card-icon");
+	icon.textContent = "📝";
+	header.appendChild(icon);
+
+	const headerText = document.createElement("div");
+	const title = document.createElement("div");
+	title.classList.add("quiz-card-title");
+	title.textContent = "Quiz Ready";
+	headerText.appendChild(title);
+	const topic = document.createElement("div");
+	topic.classList.add("quiz-card-topic");
+	topic.textContent = normalizedQuiz.topic;
+	headerText.appendChild(topic);
+	header.appendChild(headerText);
+	card.appendChild(header);
+
+	const launcherBody = document.createElement("div");
+	launcherBody.classList.add("quiz-launcher-body");
+
+	const meta = document.createElement("div");
+	meta.classList.add("quiz-launcher-meta");
+	meta.textContent = `${normalizedQuiz.questions.length} questions available`;
+	launcherBody.appendChild(meta);
+
+	const openBtn = document.createElement("button");
+	openBtn.type = "button";
+	openBtn.classList.add("open-quiz-btn");
+	openBtn.textContent = "Open Quiz";
+	launcherBody.appendChild(openBtn);
+
+	card.appendChild(launcherBody);
+
+	// Attach quiz payload to this specific card for modal launch.
+	card.__quizData = normalizedQuiz;
+	card.dataset.quizPayload = JSON.stringify(normalizedQuiz);
+	if (metadata && metadata.quizId) {
+		card.dataset.quizId = metadata.quizId;
+	}
+	if (metadata && Number.isInteger(metadata.messageIndex)) {
+		card.dataset.messageIndex = String(metadata.messageIndex);
+	}
+
+	openBtn.addEventListener("click", () => {
+		let storedQuiz = card.__quizData || null;
+		if (!storedQuiz && card.dataset.quizPayload) {
+			try {
+				storedQuiz = normalizeQuizPayload(JSON.parse(card.dataset.quizPayload));
+			} catch (_error) {
+				storedQuiz = null;
+			}
+		}
+
+		if (!storedQuiz) {
+			return;
+		}
+
+		openQuizModal(storedQuiz, {
+			quizId: card.dataset.quizId || "",
+		});
+	});
+
+	wrapper.appendChild(card);
+	messagesContainer.appendChild(wrapper);
+	if (autoScroll) {
+		chatArea.scrollTop = chatArea.scrollHeight;
+	}
+	return wrapper;
+}
+
+/**
+ * Renders a quiz card with clickable MCQ option buttons.
+ * @param {Object} quizData - { type, topic, questions: [{ id, question, options: {A,B,C,D}, correct_option, explanation }] }
+ */
+function renderQuizCard(quizData, responseLevel = null) {
+	const wrapper = createQuizCardElement(quizData, responseLevel);
+	if (!wrapper) {
+		return null;
+	}
+
 	messagesContainer.appendChild(wrapper);
 	chatArea.scrollTop = chatArea.scrollHeight;
+	return wrapper;
 }
 
 /**

@@ -18,6 +18,7 @@ class Message:
 	role: MessageRole
 	content: str
 	created_at: datetime
+	message_index: Optional[int] = None
 	_id: Optional[ObjectId] = None
 
 	@classmethod

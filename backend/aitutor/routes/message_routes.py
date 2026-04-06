@@ -32,6 +32,7 @@ chat_interaction_router = APIRouter(prefix="/chat", tags=["chat"])
 
 # --- SECURITY: Stop marker used to hide remaining text from frontend ---
 STOP_MARKER = "[user stopped response]"
+QUIZ_ANSWER_PREFIX = "quiz answer:"
 SESSION_SUBJECTS = ("Anyone", "Maths", "Physics", "Chemistry", "Coding")
 SUBJECT_KEYWORDS = {
     "Maths": (
@@ -113,6 +114,11 @@ def _sanitize_response_content(content: str) -> str:
     return content
 
 
+def _is_quiz_answer_text(content: str) -> bool:
+    """Detect legacy quiz-answer marker text used by popup interactions."""
+    return isinstance(content, str) and content.strip().lower().startswith(QUIZ_ANSWER_PREFIX)
+
+
 def _parse_object_id(value: str, field_name: str) -> ObjectId:
     """Convert string to ObjectId with validation."""
     if not ObjectId.is_valid(value):
@@ -121,6 +127,25 @@ def _parse_object_id(value: str, field_name: str) -> ObjectId:
             detail=f"Invalid {field_name}",
         )
     return ObjectId(value)
+
+
+async def _next_message_index(db: AsyncIOMotorDatabase, chat_id: ObjectId) -> int:
+    """Return the next sequential message index for a chat."""
+    latest_with_index = await (
+        db["messages"]
+        .find({"chat_id": chat_id, "message_index": {"$exists": True}})
+        .sort("message_index", -1)
+        .limit(1)
+        .to_list(length=1)
+    )
+
+    if latest_with_index:
+        latest_index = latest_with_index[0].get("message_index")
+        if isinstance(latest_index, int) and latest_index >= 0:
+            return latest_index + 1
+
+    # Legacy fallback: old chats may not yet have message_index populated.
+    return await db["messages"].count_documents({"chat_id": chat_id})
 
 
 def _normalize_difficulty_level(value: Optional[str]) -> str:
@@ -206,6 +231,17 @@ def _is_subject_control_message(value: str) -> bool:
     return lowered in {"quiz me", "test me"}
 
 
+def _is_quiz_request(value: str) -> bool:
+    lowered = value.strip().lower()
+    if "quiz me" in lowered or "test me" in lowered:
+        return True
+
+    if re.search(r"\b(?:make|create|generate|give)\b.*\bquiz\b", lowered):
+        return True
+
+    return bool(re.search(r"\bquiz\b\s+(?:on|about)\b", lowered))
+
+
 def _should_block_for_subject(user_message: str, session_subject: str) -> bool:
     if session_subject == "Anyone":
         return False
@@ -266,7 +302,14 @@ async def create_message(
     if not chat_document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
-    message = Message.create(chat_id=chat_id, user_id=user_id, role=payload.role, content=payload.content)
+    message_index = await _next_message_index(db, chat_id)
+    message = Message.create(
+        chat_id=chat_id,
+        user_id=user_id,
+        role=payload.role,
+        content=payload.content,
+    )
+    message.message_index = message_index
     result = await db["messages"].insert_one(message.to_document())
 
     return MessageResponse(
@@ -276,6 +319,7 @@ async def create_message(
         role=message.role,
         content=message.content,
         created_at=message.created_at,
+        message_index=message_index,
         response_level=None,
     )
 
@@ -293,21 +337,50 @@ async def list_messages(
         .sort("created_at", 1)
     )
 
+    documents = await cursor.to_list(length=None)
+
     messages: list[MessageResponse] = []
-    async for document in cursor:
+    skip_next_assistant_feedback = False
+    for sequential_index, document in enumerate(documents):
+        stored_index = document.get("message_index")
+        if stored_index != sequential_index:
+            await db["messages"].update_one(
+                {"_id": document["_id"]},
+                {"$set": {"message_index": sequential_index}},
+            )
+
+        role = document.get("role", "user")
+        raw_content = str(document.get("content", ""))
+
+        # Backward compatibility: hide legacy quiz popup interactions from chat history.
+        # Legacy rows were stored as:
+        # - user: "Quiz answer: X"
+        # - assistant: generated feedback right after it
+        if skip_next_assistant_feedback and role != "assistant":
+            skip_next_assistant_feedback = False
+
+        is_marked_quiz_interaction = bool(document.get("is_quiz_interaction"))
+        if role == "user" and (_is_quiz_answer_text(raw_content) or is_marked_quiz_interaction):
+            skip_next_assistant_feedback = True
+            continue
+
+        if role == "assistant" and (skip_next_assistant_feedback or is_marked_quiz_interaction):
+            skip_next_assistant_feedback = False
+            continue
+
         # SECURITY: Sanitize assistant responses to hide stopped text
         # User messages pass through unchanged, assistant messages are sanitized
-        raw_content = document["content"]
-        sanitized_content = _sanitize_response_content(raw_content) if document["role"] == "assistant" else raw_content
+        sanitized_content = _sanitize_response_content(raw_content) if role == "assistant" else raw_content
         
         messages.append(
             MessageResponse(
                 id=str(document["_id"]),
                 chat_id=str(document["chat_id"]),
                 user_id=str(document["user_id"]),
-                role=document["role"],
+                role=role,
                 content=sanitized_content,  # Sanitized content for frontend
                 created_at=document["created_at"],
+                message_index=sequential_index,
                 response_level=document.get("response_level"),
             )
         )
@@ -334,13 +407,17 @@ async def send_message(
     if not chat_document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
-    # Save user message (this is fine, user messages don't need stop handling)
+    # Save user message with sequential index.
+    next_index = await _next_message_index(db, chat_id)
+    assistant_index = next_index + 1
+
     user_message = Message.create(
         chat_id=chat_id,
         user_id=user_id,
         role="user",
         content=payload.content,
     )
+    user_message.message_index = next_index
     await db["messages"].insert_one(user_message.to_document())
 
     # ========================
@@ -411,6 +488,7 @@ async def send_message(
             content=reply,
         )
         assistant_document = assistant_message.to_document()
+        assistant_document["message_index"] = assistant_index
         assistant_document["ai_generated"] = False
         assistant_document["was_stopped"] = False
         if response_level:
@@ -423,6 +501,7 @@ async def send_message(
             "chat_id": str(chat_id),
             "user_id": str(user_id),
             "message_id": str(result.inserted_id),
+            "message_index": assistant_index,
             "pending": False,
             "response_level": response_level,
         }
@@ -430,7 +509,7 @@ async def send_message(
             response["new_title"] = new_title
         return response
 
-    is_quiz = any(trigger in content_lower for trigger in ["quiz me", "test me"])
+    is_quiz = _is_quiz_request(payload.content)
     is_summary = content_lower.strip() == "summarize" or content_lower.strip().startswith("summarize ")
 
     if is_quiz:
@@ -442,12 +521,49 @@ async def send_message(
             session_subject=session_subject,
         )
 
+        if str(quiz_data.get("type", "")).strip().lower() != "quiz":
+            refusal_text = str(quiz_data.get("content", "")).strip()
+            if not refusal_text:
+                refusal_text = "I can only create quizzes for study or education-related topics."
+
+            assistant_message = Message.create(
+                chat_id=chat_id,
+                user_id=user_id,
+                role="assistant",
+                content=refusal_text,
+            )
+            assistant_document = assistant_message.to_document()
+            assistant_document["message_index"] = assistant_index
+            assistant_document["ai_generated"] = True
+            assistant_document["was_stopped"] = False
+            if response_level:
+                assistant_document["response_level"] = response_level
+            result = await db["messages"].insert_one(assistant_document)
+
+            response = {
+                "type": "text",
+                "content": refusal_text,
+                "chat_id": str(chat_id),
+                "user_id": str(user_id),
+                "message_id": str(result.inserted_id),
+                "message_index": assistant_index,
+                "pending": False,
+                "response_level": response_level,
+            }
+            if new_title:
+                response["new_title"] = new_title
+            return response
+
         # Save a text summary to DB so history makes sense
-        quiz_summary = f"📝 Quiz: {quiz_data.get('topic', 'Topic')} — 3 questions generated."
+        question_count = len(quiz_data.get("questions", []))
+        quiz_summary = (
+            f"📝 Quiz: {quiz_data.get('topic', 'Topic')} — {question_count} questions generated."
+        )
         assistant_message = Message.create(
             chat_id=chat_id, user_id=user_id, role="assistant", content=quiz_summary,
         )
         assistant_document = assistant_message.to_document()
+        assistant_document["message_index"] = assistant_index
         assistant_document["ai_generated"] = True
         assistant_document["was_stopped"] = False
         if response_level:
@@ -460,6 +576,7 @@ async def send_message(
             "chat_id": str(chat_id),
             "user_id": str(user_id),
             "message_id": str(result.inserted_id),
+            "message_index": assistant_index,
             "pending": False,
             "quiz": quiz_data,
             "response_level": response_level,
@@ -487,6 +604,7 @@ async def send_message(
             chat_id=chat_id, user_id=user_id, role="assistant", content=summary_text,
         )
         assistant_document = assistant_message.to_document()
+        assistant_document["message_index"] = assistant_index
         assistant_document["ai_generated"] = True
         assistant_document["was_stopped"] = False
         if response_level:
@@ -499,6 +617,7 @@ async def send_message(
             "chat_id": str(chat_id),
             "user_id": str(user_id),
             "message_id": str(result.inserted_id),
+            "message_index": assistant_index,
             "pending": False,
             "summary": summary_data,
             "response_level": response_level,
@@ -527,6 +646,7 @@ async def send_message(
         content=reply,
     )
     assistant_document = assistant_message.to_document()
+    assistant_document["message_index"] = assistant_index
     assistant_document["ai_generated"] = True
     assistant_document["was_stopped"] = False
     if response_level:
@@ -542,6 +662,7 @@ async def send_message(
         "chat_id": str(chat_id),
         "user_id": str(user_id),
         "message_id": str(saved_message_id),
+        "message_index": assistant_index,
         "pending": False,
         "response_level": response_level,
     }
@@ -620,6 +741,7 @@ async def finalize_response(
             role=existing_message["role"],
             content=existing_message["content"],
             created_at=existing_message["created_at"],
+            message_index=existing_message.get("message_index"),
             response_level=existing_message.get("response_level"),
         )
 
@@ -651,6 +773,7 @@ async def finalize_response(
         role="assistant",
         content=final_content,
         created_at=existing_message["created_at"],
+        message_index=existing_message.get("message_index"),
         response_level=existing_message.get("response_level"),
     )
 
@@ -691,23 +814,12 @@ async def submit_quiz_answer(
 
     is_correct = payload.selected_option.strip().upper() == payload.correct_option.strip().upper()
 
-    # Save answer + feedback as messages in the chat
-    user_answer_text = f"Quiz answer: {payload.selected_option}"
-    user_msg = Message.create(chat_id=chat_id, user_id=user_id, role="user", content=user_answer_text)
-    await db["messages"].insert_one(user_msg.to_document())
-
-    assistant_msg = Message.create(chat_id=chat_id, user_id=user_id, role="assistant", content=feedback)
-    assistant_doc = assistant_msg.to_document()
-    assistant_doc["ai_generated"] = True
-    assistant_doc["was_stopped"] = False
-    if response_level:
-        assistant_doc["response_level"] = response_level
-    result = await db["messages"].insert_one(assistant_doc)
+    # IMPORTANT: Quiz popup interactions are isolated from chat history.
+    # Do NOT save user quiz selections or AI quiz feedback in messages collection.
 
     return {
         "feedback": feedback,
         "is_correct": is_correct,
         "correct_option": payload.correct_option,
-        "message_id": str(result.inserted_id),
         "response_level": response_level,
     }

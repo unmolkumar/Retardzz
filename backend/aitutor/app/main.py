@@ -29,6 +29,7 @@ from routes.ui_routes import ui_router
 from routes.password_reset_routes import router as password_reset_router
 from routes.help_routes import router as help_router
 from routes.account_routes import router as account_router
+from routes.quiz_routes import router as quiz_router
 from services.deletion_service import process_scheduled_deletions
 
 # Create FastAPI application instance
@@ -54,6 +55,7 @@ app.include_router(chat_interaction_router)
 app.include_router(ui_router)
 app.include_router(help_router)
 app.include_router(account_router)
+app.include_router(quiz_router)
 
 
 @app.on_event("startup")
@@ -65,8 +67,24 @@ async def startup_event():
     """
     await connect_to_mongo()
     
-    # Process any accounts scheduled for deletion that have exceeded 30 days
-    # This runs on every server start to catch any accounts that passed the deadline
+    # Ensure quiz collection indexes exist.
+    # quiz_id must be unique and queries by chat should be fast.
+    try:
+        db = get_database()
+        await db["messages"].create_index([("chat_id", 1), ("message_index", 1)])
+        await db["quizzes"].create_index("quiz_id", unique=True)
+        await db["quizzes"].create_index(
+            [("chat_id", 1), ("message_index", 1), ("created_at", 1)]
+        )
+        await db["quiz_attempts"].create_index(
+            [("quiz_id", 1), ("question_index", 1), ("created_at", 1)]
+        )
+        await db["quiz_attempts"].create_index([("quiz_id", 1), ("created_at", 1)])
+    except Exception as e:
+        print(f"⚠ Failed to ensure quiz indexes: {e}")
+
+    # Process any accounts scheduled for deletion that have exceeded 30 days.
+    # This runs on every server start to catch any accounts that passed the deadline.
     try:
         db = get_database()
         deleted_count = await process_scheduled_deletions(db)

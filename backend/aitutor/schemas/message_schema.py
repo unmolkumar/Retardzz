@@ -24,6 +24,7 @@ class MessageResponse(BaseModel):
 	role: str
 	content: str
 	created_at: datetime
+	message_index: Optional[int] = None
 	response_level: Optional[str] = None
 
 

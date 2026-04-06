@@ -373,7 +373,18 @@ function getWhiteboardBaseUrl() {
 }
 
 function getWhiteboardRoomUrl(roomId) {
-    return `${getWhiteboardBaseUrl()}/room/${encodeURIComponent(roomId)}`;
+    const roomPath = `${getWhiteboardBaseUrl()}/room/${encodeURIComponent(roomId)}`;
+    const whiteboardUrl = new URL(roomPath);
+    const roomName = getRoomNameFromCache(roomId, 'Study Room');
+
+    if (currentUser) {
+        whiteboardUrl.searchParams.set('username', currentUser);
+    }
+    if (roomName) {
+        whiteboardUrl.searchParams.set('roomName', roomName);
+    }
+
+    return whiteboardUrl.toString();
 }
 
 function openWhiteboardForActiveRoom() {

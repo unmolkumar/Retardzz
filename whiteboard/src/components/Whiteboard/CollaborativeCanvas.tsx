@@ -7,14 +7,48 @@ import Cursors from "./Cursors";
 
 interface CollaborativeCanvasProps {
   roomId: string;
+  username?: string;
+  roomName?: string;
 }
 
-export default function CollaborativeCanvas({ roomId }: CollaborativeCanvasProps) {
+function pickColor(seed: string): string {
+  const palette = [
+    "blue",
+    "green",
+    "orange",
+    "violet",
+    "red",
+    "cyan",
+    "yellow",
+    "teal",
+  ];
+
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+
+  return palette[Math.abs(hash) % palette.length];
+}
+
+export default function CollaborativeCanvas({ roomId, username = "", roomName = "" }: CollaborativeCanvasProps) {
+  const trimmedUsername = username.trim();
+  const resolvedUsername = trimmedUsername || `guest-${roomId.slice(0, 4)}`;
+  const presenceColor = pickColor(resolvedUsername || roomId);
+
   return (
-    <RoomProvider id={roomId} initialPresence={{ cursor: null }}>
+    <RoomProvider
+      id={roomId}
+      initialPresence={{
+        cursor: null,
+        username: resolvedUsername,
+        color: presenceColor,
+      }}
+    >
       <ClientSideSuspense fallback={<div>Loading Room...</div>}>
         <Cursors />
-        <Editor />
+        <Editor roomId={roomId} roomName={roomName} username={resolvedUsername} />
       </ClientSideSuspense>
     </RoomProvider>
   );

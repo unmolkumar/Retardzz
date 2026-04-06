@@ -23,6 +23,8 @@ from services.ai_services import (
     generate_quiz_feedback_reply,
     generate_quiz_payload,
     generate_summary_payload,
+    is_valid_structured_topic_candidate,
+    structured_refusal_message,
 )
 from services.logic_engine import process_logic
 # Import the new rename module
@@ -320,6 +322,30 @@ def _is_mindmap_request(value: str) -> bool:
         return True
 
     return bool(re.search(r"\bmind\s*map\b\s+(?:on|about|for|of)\b", lowered))
+
+
+def _resolve_structured_request_kind(value: str, api_prompt: Optional[str] = None) -> Optional[str]:
+    """Resolve requested structured generation kind from user content and command markers."""
+    marker_source = (api_prompt or "").upper()
+    if "[MINDMAP COMMAND]" in marker_source:
+        return "mindmap"
+    if "[FLASHCARD COMMAND]" in marker_source:
+        return "flashcard"
+    if "[VISUAL QUIZ COMMAND]" in marker_source or "[QUICK QUIZ COMMAND]" in marker_source:
+        return "quiz"
+
+    if _is_mindmap_request(value):
+        return "mindmap"
+    if _is_flashcard_request(value):
+        return "flashcard"
+    if _is_quiz_request(value):
+        return "quiz"
+    return None
+
+
+def _is_quick_quiz_mode_request(api_prompt: Optional[str]) -> bool:
+    marker_source = (api_prompt or "").upper()
+    return "[QUICK QUIZ COMMAND]" in marker_source
 
 
 def _normalize_person_target(raw_value: str) -> str:
@@ -764,14 +790,49 @@ async def send_message(
         difficulty,
     )
     response_level = difficulty if difficulty != "Neutral" else None
+    structured_request_kind = _resolve_structured_request_kind(payload.content, payload.api_prompt)
+
+    # Quick quiz uses normal chat generation path, so validate topic before any generation.
+    if _is_quick_quiz_mode_request(payload.api_prompt):
+        if not is_valid_structured_topic_candidate(payload.content, payload.api_prompt or payload.content):
+            refusal_text = structured_refusal_message("quiz")
+            assistant_message = Message.create(
+                chat_id=chat_id,
+                user_id=user_id,
+                role="assistant",
+                content=refusal_text,
+            )
+            assistant_document = assistant_message.to_document()
+            assistant_document["message_index"] = assistant_index
+            assistant_document["ai_generated"] = False
+            assistant_document["was_stopped"] = False
+            if response_level:
+                assistant_document["response_level"] = response_level
+
+            result = await db["messages"].insert_one(assistant_document)
+            response = {
+                "type": "text",
+                "content": refusal_text,
+                "chat_id": str(chat_id),
+                "user_id": str(user_id),
+                "message_id": str(result.inserted_id),
+                "message_index": assistant_index,
+                "pending": False,
+                "response_level": response_level,
+            }
+            return _enrich_chat_response(response, chat_subject, new_title)
 
     personal_guard_response = _get_personal_guard_response(payload.content)
     if personal_guard_response is not None:
+        guard_response = personal_guard_response
+        if structured_request_kind:
+            guard_response = structured_refusal_message(structured_request_kind)
+
         assistant_message = Message.create(
             chat_id=chat_id,
             user_id=user_id,
             role="assistant",
-            content=personal_guard_response,
+            content=guard_response,
         )
         assistant_document = assistant_message.to_document()
         assistant_document["message_index"] = assistant_index
@@ -783,7 +844,7 @@ async def send_message(
         result = await db["messages"].insert_one(assistant_document)
         response = {
             "type": "text",
-            "content": personal_guard_response,
+            "content": guard_response,
             "chat_id": str(chat_id),
             "user_id": str(user_id),
             "message_id": str(result.inserted_id),
@@ -865,7 +926,7 @@ async def send_message(
         if str(mindmap_data.get("type", "")).strip().lower() != "mindmap":
             refusal_text = str(mindmap_data.get("content", "")).strip()
             if not refusal_text:
-                refusal_text = "I can only create mind maps for study or education-related topics."
+                refusal_text = structured_refusal_message("mindmap")
 
             assistant_message = Message.create(
                 chat_id=chat_id,
@@ -932,7 +993,7 @@ async def send_message(
         if str(flashcard_data.get("type", "")).strip().lower() != "flashcard":
             refusal_text = str(flashcard_data.get("content", "")).strip()
             if not refusal_text:
-                refusal_text = "I can only create flashcards for study or education-related topics."
+                refusal_text = structured_refusal_message("flashcard")
 
             assistant_message = Message.create(
                 chat_id=chat_id,
@@ -1000,7 +1061,7 @@ async def send_message(
         if str(quiz_data.get("type", "")).strip().lower() != "quiz":
             refusal_text = str(quiz_data.get("content", "")).strip()
             if not refusal_text:
-                refusal_text = "I can only create quizzes for study or education-related topics."
+                refusal_text = structured_refusal_message("quiz")
 
             assistant_message = Message.create(
                 chat_id=chat_id,

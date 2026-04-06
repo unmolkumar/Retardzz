@@ -12,12 +12,20 @@ import type {
   Stroke,
   ShapeData,
   DrawElement,
+  CursorPayload,
   WhiteboardProps,
 } from './types';
 import { renderElement, getCanvasPoint, uid } from './drawUtils';
 import { useWhiteboardHistory } from './useWhiteboardHistory';
+import { useWhiteboardSocket } from './useWhiteboardSocket';
 import Toolbar from './Toolbar';
 import './whiteboard.css';
+
+// ── Cursor color palette (per-user) ─────────────────────────────
+const CURSOR_COLORS = [
+  '#8B5CF6', '#3B82F6', '#EF4444', '#22C55E',
+  '#F97316', '#EC4899', '#EAB308', '#06B6D4',
+];
 
 // Canvas resolution
 const CANVAS_W = 1920;
@@ -44,6 +52,11 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
     value: string;
   }>({ visible: false, position: { x: 0, y: 0 }, value: '' });
 
+  // ── Live cursors from remote users ────────────────────────────
+  const [remoteCursors, setRemoteCursors] = useState<
+    Map<string, CursorPayload>
+  >(new Map());
+
   // ── History (undo/redo) ───────────────────────────────────────
   const {
     elements,
@@ -55,6 +68,34 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
     canUndo,
     canRedo,
   } = useWhiteboardHistory(userId);
+
+  // ── Socket integration ────────────────────────────────────────
+  const onRemoteDraw = useCallback(
+    (element: DrawElement) => {
+      addRemoteElement(element);
+    },
+    [addRemoteElement],
+  );
+
+  const onRemoteCursor = useCallback((cursor: CursorPayload) => {
+    setRemoteCursors((prev) => {
+      const next = new Map(prev);
+      next.set(cursor.userId, cursor);
+      return next;
+    });
+  }, []);
+
+  const onRemoteClear = useCallback(() => {
+    clearAll();
+  }, [clearAll]);
+
+  const { emitDraw, emitClear, emitCursor } = useWhiteboardSocket({
+    roomId,
+    userId,
+    onRemoteDraw,
+    onRemoteCursor,
+    onRemoteClear,
+  });
 
   // ── Full canvas re-render ─────────────────────────────────────
   const redrawCanvas = useCallback(() => {
@@ -112,10 +153,14 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!isDrawing.current) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
       const point = getCanvasPoint(canvas, e);
+
+      // ── Always emit cursor position (throttled naturally by mousemove) ──
+      emitCursor(point.x, point.y);
+
+      if (!isDrawing.current) return;
 
       if (activeTool === 'pen' || activeTool === 'eraser') {
         currentPoints.current.push(point);
@@ -154,7 +199,7 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
         }
       }
     },
-    [activeTool, activeColor, brushSize, userId, redrawCanvas],
+    [activeTool, activeColor, brushSize, userId, redrawCanvas, emitCursor],
   );
 
   const handleMouseUp = useCallback(
@@ -177,7 +222,7 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
           timestamp: Date.now(),
         };
         addElement(stroke);
-        // TODO: emit whiteboard:draw via socket
+        emitDraw(stroke);
         currentPoints.current = [];
       } else if (shapeStart.current) {
         const endPt = getCanvasPoint(canvas, e);
@@ -192,11 +237,11 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
           timestamp: Date.now(),
         };
         addElement(shape);
-        // TODO: emit whiteboard:draw via socket
+        emitDraw(shape);
         shapeStart.current = null;
       }
     },
-    [activeTool, activeColor, brushSize, userId, addElement],
+    [activeTool, activeColor, brushSize, userId, addElement, emitDraw],
   );
 
   // ── Text tool submission ──────────────────────────────────────
@@ -229,9 +274,9 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
       timestamp: Date.now(),
     };
     addElement(textEl);
-    // TODO: emit whiteboard:draw via socket
+    emitDraw(textEl);
     setTextInput({ visible: false, position: { x: 0, y: 0 }, value: '' });
-  }, [textInput, activeColor, brushSize, userId, addElement]);
+  }, [textInput, activeColor, brushSize, userId, addElement, emitDraw]);
 
   // ── Export ─────────────────────────────────────────────────────
   const handleExport = useCallback(
@@ -307,6 +352,29 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
             placeholder="Type here…"
           />
         )}
+
+        {/* ── Live cursors from other users ──────────────────── */}
+        {Array.from(remoteCursors.values()).map((cursor, idx) => {
+          const canvas = canvasRef.current;
+          if (!canvas) return null;
+          const rect = canvas.getBoundingClientRect();
+          const displayX = (cursor.position.x / CANVAS_W) * rect.width;
+          const displayY = (cursor.position.y / CANVAS_H) * rect.height;
+          const color = CURSOR_COLORS[idx % CURSOR_COLORS.length];
+          return (
+            <div
+              key={cursor.userId}
+              className="wb-cursor-label"
+              style={{
+                left: displayX,
+                top: displayY,
+                backgroundColor: color,
+              }}
+            >
+              {cursor.userName}
+            </div>
+          );
+        })}
       </div>
 
       <Toolbar
@@ -318,7 +386,7 @@ export default function Canvas({ roomId, userId }: WhiteboardProps) {
         onSizeChange={setBrushSize}
         onUndo={undo}
         onRedo={redo}
-        onClear={clearAll}
+        onClear={() => { clearAll(); emitClear(); }}
         onExport={handleExport}
         canUndo={canUndo}
         canRedo={canRedo}

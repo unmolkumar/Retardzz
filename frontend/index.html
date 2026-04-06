@@ -108,15 +108,6 @@
 				<button class="diff-btn" data-level="Intermediate" id="diff-intermediate" title="Intermediate level">Intermediate</button>
 				<button class="diff-btn" data-level="Advanced" id="diff-advanced" title="Advanced level">Advanced</button>
 			</div>
-
-			<!-- Guided Learning Toggle -->
-			<div class="guided-toggle-wrapper" id="guided-toggle-wrapper">
-				<span class="guided-label" id="guided-label">Ask Me Anything</span>
-				<label class="guided-toggle" for="guided-toggle-input">
-					<input type="checkbox" id="guided-toggle-input">
-					<span class="guided-slider"></span>
-				</label>
-			</div>
 		</div>
 
 			<!-- Mobile Chat Title (expandable, visible only on mobile) -->
@@ -192,6 +183,17 @@
 
 		<div class="input-container-wrapper">
 			<div class="input-container">
+				<div class="subject-selector-row" id="subject-selector-row">
+					<label class="subject-label" for="subject-select">Subject</label>
+					<select id="subject-select" class="subject-select" aria-label="Session subject selector">
+						<option value="Anyone">Anyone</option>
+						<option value="Maths">Maths</option>
+						<option value="Physics">Physics</option>
+						<option value="Chemistry">Chemistry</option>
+						<option value="Coding">Coding</option>
+					</select>
+				</div>
+
 				<form id="message-form" class="input-bar">
 					<button class="icon-btn" id="upload-btn" type="button" title="Upload File">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"

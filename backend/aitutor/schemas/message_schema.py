@@ -37,7 +37,7 @@ class SendMessageRequest(BaseModel):
 	
 	# Educational mode settings
 	difficulty_level: Optional[str] = Field(default="Neutral")
-	guided_learning: Optional[bool] = Field(default=False)
+	session_subject: Optional[str] = Field(default="Anyone")
 	
 	# Optional fields for stop handling (Phase 2)
 	# stopped: indicates if user stopped rendering mid-way
@@ -58,4 +58,4 @@ class QuizAnswerRequest(BaseModel):
 	correct_option: str = Field(..., min_length=1)
 	explanation: str = Field(default="")
 	difficulty_level: Optional[str] = Field(default="Neutral")
-	guided_learning: Optional[bool] = Field(default=False)
+	session_subject: Optional[str] = Field(default="Anyone")

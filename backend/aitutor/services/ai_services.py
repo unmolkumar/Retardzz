@@ -25,7 +25,7 @@ YOUR ROLE:
 - Teach in a structured way for every concept:
   1. Explain the concept clearly in simple language.
   2. Give a real-world example that makes it click.
-  3. Ask a follow-up question to check understanding when guided learning is enabled.
+    3. Ask a short follow-up question only when it clearly helps check understanding.
 
 QUIZ HANDLING:
 - If quiz interactions are requested by runtime instructions, follow those instructions exactly.
@@ -82,20 +82,46 @@ def _difficulty_instruction(difficulty_level: str) -> str:
     )
 
 
-def _guided_instruction(guided_learning: bool) -> str:
-    if guided_learning:
-        return (
-            "Guided Learning is ON. End each teaching response with exactly one "
-            "short follow-up question that checks understanding."
-        )
-    return "Guided Learning is OFF. Do not force a follow-up question."
+def _normalize_session_subject(session_subject: str | None) -> str:
+    if not session_subject:
+        return "Anyone"
+
+    normalized = session_subject.strip().lower()
+    if normalized == "maths":
+        return "Maths"
+    if normalized == "physics":
+        return "Physics"
+    if normalized == "chemistry":
+        return "Chemistry"
+    if normalized == "coding":
+        return "Coding"
+    return "Anyone"
 
 
-def _build_runtime_instructions(difficulty_level: str, guided_learning: bool) -> str:
+def _subject_mismatch_message(session_subject: str) -> str:
+    return (
+        f"This question is not related to the current session subject ({session_subject}). "
+        f"Please ask a {session_subject}-related question or switch subject to Anyone."
+    )
+
+
+def _subject_instruction(session_subject: str) -> str:
+    if session_subject == "Anyone":
+        return "Subject mode: Anyone. No fixed subject constraint."
+
+    mismatch_message = _subject_mismatch_message(session_subject)
+    return (
+        f"Subject mode: {session_subject}. Keep answers strictly in {session_subject} context. "
+        "If the user asks something outside this subject, respond with ONLY this exact sentence and nothing else: "
+        f'"{mismatch_message}"'
+    )
+
+
+def _build_runtime_instructions(difficulty_level: str, session_subject: str) -> str:
     return (
         "ACTIVE SETTINGS:\n"
         f"- Difficulty: {difficulty_level}. {_difficulty_instruction(difficulty_level)}\n"
-        f"- {_guided_instruction(guided_learning)}"
+        f"- {_subject_instruction(session_subject)}"
     )
 
 
@@ -353,7 +379,7 @@ async def generate_ai_reply(message: str, context: Sequence[str]) -> str:
         message=message,
         context=context,
         difficulty_level="Neutral",
-        guided_learning=False,
+        session_subject="Anyone",
     )
 
 
@@ -361,11 +387,12 @@ async def generate_ai_reply_with_mode(
     message: str,
     context: Sequence[str],
     difficulty_level: str,
-    guided_learning: bool,
+    session_subject: str = "Anyone",
 ) -> str:
-    """Generate a normal tutor response with active difficulty and guided settings."""
+    """Generate a normal tutor response with active difficulty and subject settings."""
     normalized_difficulty = _normalize_difficulty(difficulty_level)
-    runtime_instructions = _build_runtime_instructions(normalized_difficulty, guided_learning)
+    normalized_subject = _normalize_session_subject(session_subject)
+    runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
     user_content = _build_user_content(context, message)
     full_system_prompt = f"{SYSTEM_PROMPT}\n\n{runtime_instructions}"
     reply = await _call_groq(
@@ -382,12 +409,13 @@ async def generate_quiz_payload(
     message: str,
     context: Sequence[str],
     difficulty_level: str,
-    guided_learning: bool,
+    session_subject: str = "Anyone",
 ) -> dict[str, Any]:
     """Generate a structured 3-question MCQ quiz payload."""
     normalized_difficulty = _normalize_difficulty(difficulty_level)
+    normalized_subject = _normalize_session_subject(session_subject)
     topic = _infer_topic_from_context(context)
-    runtime_instructions = _build_runtime_instructions(normalized_difficulty, guided_learning)
+    runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
 
     quiz_system_prompt = (
         f"{SYSTEM_PROMPT}\n\n"
@@ -432,12 +460,13 @@ async def generate_summary_payload(
     message: str,
     context: Sequence[str],
     difficulty_level: str,
-    guided_learning: bool,
+    session_subject: str = "Anyone",
 ) -> dict[str, Any]:
     """Generate a structured concept summary payload."""
     normalized_difficulty = _normalize_difficulty(difficulty_level)
+    normalized_subject = _normalize_session_subject(session_subject)
     topic = _infer_topic_from_context(context)
-    runtime_instructions = _build_runtime_instructions(normalized_difficulty, guided_learning)
+    runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
 
     summary_system_prompt = (
         f"{SYSTEM_PROMPT}\n\n"
@@ -479,11 +508,12 @@ async def generate_quiz_feedback_reply(
     correct_option: str,
     explanation: str,
     difficulty_level: str,
-    guided_learning: bool,
+    session_subject: str = "Anyone",
 ) -> str:
     """Generate AI feedback for a selected quiz answer."""
     normalized_difficulty = _normalize_difficulty(difficulty_level)
-    runtime_instructions = _build_runtime_instructions(normalized_difficulty, guided_learning)
+    normalized_subject = _normalize_session_subject(session_subject)
+    runtime_instructions = _build_runtime_instructions(normalized_difficulty, normalized_subject)
 
     safe_selected = _normalize_option_label(selected_option)
     safe_correct = _normalize_option_label(correct_option)
@@ -498,8 +528,7 @@ async def generate_quiz_feedback_reply(
         "Structure your response as:\n"
         "1) Verdict line starting with Correct or Not quite.\n"
         "2) Short explanation of why.\n"
-        "3) One practical tip.\n"
-        "4) Add one follow-up question only when Guided Learning is ON."
+        "3) One practical tip."
     )
 
     feedback_user_prompt = (

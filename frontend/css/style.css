@@ -1052,6 +1052,42 @@ body {
 	margin: 20px auto 0;
 }
 
+.subject-selector-row {
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+	margin: 0 4px 10px;
+}
+
+.subject-label {
+	font-size: 0.78rem;
+	font-weight: 600;
+	color: var(--text-sub);
+	letter-spacing: 0.01em;
+}
+
+.subject-select {
+	background: var(--bg-input);
+	color: var(--text-main);
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 6px 10px;
+	font-size: 0.82rem;
+	font-family: var(--font-main);
+	cursor: pointer;
+	transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.subject-select:focus {
+	border-color: #7c3aed;
+	box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2);
+}
+
+[data-theme="dark"] .subject-select {
+	background: rgba(255, 255, 255, 0.04);
+}
+
 .input-bar {
 	background: var(--bg-input);
 	border-radius: 26px;
@@ -1788,6 +1824,17 @@ body {
 
 	.input-container {
 		margin-top: 12px;
+	}
+
+	.subject-selector-row {
+		justify-content: flex-start;
+		margin: 0 2px 8px;
+	}
+
+	.subject-select {
+		font-size: 0.8rem;
+		padding: 6px 8px;
+		max-width: 180px;
 	}
 
 	.input-bar {
@@ -2809,8 +2856,7 @@ body {
 /* ============================================================
    EDUCATIONAL FEATURES
    ============================================================
-   Styles for: Difficulty Level Selector, Guided Learning Toggle,
-   Quiz Cards, Summary Cards
+	Styles for: Difficulty Level Selector, Quiz Cards, Summary Cards
    ============================================================ */
 
 /* --- Educational Controls Container (in header) --- */
@@ -2863,73 +2909,6 @@ body {
 [data-theme="dark"] .diff-btn.active {
 	background: linear-gradient(135deg, #8b5cf6, #7c3aed);
 	box-shadow: 0 2px 16px rgba(139, 92, 246, 0.4);
-}
-
-/* --- Guided Learning Toggle --- */
-.guided-toggle-wrapper {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.guided-label {
-	font-size: 0.78rem;
-	font-weight: 500;
-	color: var(--text-sub);
-	white-space: nowrap;
-	transition: color 0.3s;
-}
-
-.guided-toggle {
-	position: relative;
-	display: inline-block;
-	width: 40px;
-	height: 22px;
-	cursor: pointer;
-}
-
-.guided-toggle input {
-	opacity: 0;
-	width: 0;
-	height: 0;
-}
-
-.guided-slider {
-	position: absolute;
-	top: 0;
-	left: 0;
-	right: 0;
-	bottom: 0;
-	background: var(--border);
-	border-radius: 22px;
-	transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
-}
-
-.guided-slider::before {
-	content: "";
-	position: absolute;
-	width: 16px;
-	height: 16px;
-	left: 3px;
-	bottom: 3px;
-	background: white;
-	border-radius: 50%;
-	transition: transform 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
-	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-.guided-toggle input:checked + .guided-slider {
-	background: linear-gradient(135deg, #7c3aed, #6d28d9);
-	box-shadow: 0 0 12px rgba(124, 58, 237, 0.3);
-}
-
-[data-theme="dark"] .guided-toggle input:checked + .guided-slider {
-	background: linear-gradient(135deg, #8b5cf6, #7c3aed);
-	box-shadow: 0 0 16px rgba(139, 92, 246, 0.35);
-}
-
-.guided-toggle input:checked + .guided-slider::before {
-	transform: translateX(18px);
 }
 
 /* --- QUIZ CARD --- */
@@ -3302,10 +3281,6 @@ body {
 	.diff-btn {
 		padding: 5px 10px;
 		font-size: 0.72rem;
-	}
-
-	.guided-label {
-		display: none;
 	}
 }
 

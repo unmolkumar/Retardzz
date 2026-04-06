@@ -34,8 +34,11 @@ const state = {
 	username: localStorage.getItem("username"),
 	activeChatId: localStorage.getItem("activeChatId"),
 	difficultyLevel: localStorage.getItem("difficultyLevel") || "Neutral",
-	guidedLearning: localStorage.getItem("guidedLearning") === "true",
+	sessionSubject: localStorage.getItem("sessionSubject") || "Anyone",
 };
+
+// Cleanup legacy preference from removed guided-learning mode.
+localStorage.removeItem("guidedLearning");
 
 // DOM elements
 const sidebar = document.getElementById("sidebar");
@@ -60,6 +63,7 @@ const loadingMessage = document.getElementById("loading-message");
 const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
 const uploadBtn = document.getElementById("upload-btn");
+const subjectSelect = document.getElementById("subject-select");
 
 // Mobile sidebar elements
 const mobileMenuBtn = document.getElementById("mobile-menu-btn");
@@ -1455,6 +1459,7 @@ function createNewChat() {
 	// Clear active chat
 	state.activeChatId = null;
 	localStorage.removeItem("activeChatId");
+	setSessionSubject("Anyone");
 	messagesContainer.innerHTML = "";
 	updateTitleBar("Saivo");
 	setChatStatus("", false);
@@ -1538,6 +1543,7 @@ async function sendMessage(content) {
 	setChatStatus("", false);
 
 	const difficultyAtSend = normalizeDifficultyLevel(state.difficultyLevel);
+	const subjectAtSend = normalizeSessionSubject(state.sessionSubject);
 	const apiPrompt = buildApiPrompt(trimmedContent, difficultyAtSend);
 
 	// CHAT-SCOPED GENERATION: Track which chat is generating
@@ -1560,7 +1566,7 @@ async function sendMessage(content) {
 				content: trimmedContent,
 				api_prompt: apiPrompt,
 				difficulty_level: difficultyAtSend,
-				guided_learning: state.guidedLearning,
+				session_subject: subjectAtSend,
 			},
 		});
 
@@ -1650,7 +1656,7 @@ async function sendMessage(content) {
 // ========================
 // EDUCATIONAL FEATURES
 // ========================
-// Quiz Cards, Summary Cards, Difficulty Level, Guided Learning
+// Quiz Cards, Summary Cards, Difficulty Level
 // ========================
 
 /**
@@ -1789,7 +1795,7 @@ async function handleQuizAnswer(selectedBtn, allButtons, questionDiv, questionDa
 				correct_option: questionData.correct_option,
 				explanation: questionData.explanation || "",
 				difficulty_level: state.difficultyLevel,
-				guided_learning: state.guidedLearning,
+				session_subject: normalizeSessionSubject(state.sessionSubject),
 			},
 		});
 
@@ -1899,6 +1905,7 @@ function renderSummaryCard(summaryData, responseLevel = null) {
 // ========================
 const difficultyBtns = document.querySelectorAll(".diff-btn");
 const DIFFICULTY_LEVELS = ["Neutral", "Beginner", "Intermediate", "Advanced"];
+const SESSION_SUBJECTS = ["Anyone", "Maths", "Physics", "Chemistry", "Coding"];
 
 function normalizeDifficultyLevel(level) {
 	if (typeof level !== "string") {
@@ -1912,13 +1919,35 @@ function normalizeDifficultyLevel(level) {
 	return "Neutral";
 }
 
-function buildApiPrompt(content, difficultyLevel) {
-	const normalizedDifficulty = normalizeDifficultyLevel(difficultyLevel);
-	if (normalizedDifficulty === "Neutral") {
-		return content;
+function normalizeSessionSubject(subject) {
+	if (typeof subject !== "string") {
+		return "Anyone";
 	}
 
-	return `${content} at ${normalizedDifficulty.toLowerCase()} level`;
+	const normalized = subject.trim().toLowerCase();
+	if (normalized === "maths") return "Maths";
+	if (normalized === "physics") return "Physics";
+	if (normalized === "chemistry") return "Chemistry";
+	if (normalized === "coding") return "Coding";
+	return "Anyone";
+}
+
+function buildApiPrompt(content, difficultyLevel) {
+	const normalizedDifficulty = normalizeDifficultyLevel(difficultyLevel);
+	let prompt = content;
+
+	if (normalizedDifficulty !== "Neutral") {
+		prompt = `${prompt} at ${normalizedDifficulty.toLowerCase()} level`;
+	}
+
+	const normalizedSubject = normalizeSessionSubject(state.sessionSubject);
+	if (normalizedSubject === "Anyone") {
+		return prompt;
+	}
+
+	const mismatchMessage = `This question is not related to the current session subject (${normalizedSubject}). Please ask a ${normalizedSubject}-related question or switch subject to Anyone.`;
+
+	return `${prompt}\n\n[SESSION SUBJECT MODE]\nCurrent session subject: ${normalizedSubject}.\nAnswer only in the context of ${normalizedSubject}.\nIf the user's question is unrelated, respond with ONLY this exact sentence and nothing else:\n"${mismatchMessage}"`;
 }
 
 function setDifficultyLevel(level) {
@@ -1935,6 +1964,20 @@ function setDifficultyLevel(level) {
 	});
 }
 
+function setSessionSubject(subject) {
+	const normalizedSubject = normalizeSessionSubject(subject);
+	if (!SESSION_SUBJECTS.includes(normalizedSubject)) {
+		return;
+	}
+
+	state.sessionSubject = normalizedSubject;
+	localStorage.setItem("sessionSubject", normalizedSubject);
+
+	if (subjectSelect) {
+		subjectSelect.value = normalizedSubject;
+	}
+}
+
 difficultyBtns.forEach(btn => {
 	btn.addEventListener("click", () => {
 		setDifficultyLevel(btn.dataset.level);
@@ -1946,32 +1989,13 @@ if (state.difficultyLevel) {
 	setDifficultyLevel(state.difficultyLevel);
 }
 
-// ========================
-// GUIDED LEARNING TOGGLE
-// ========================
-const guidedToggleInput = document.getElementById("guided-toggle-input");
-const guidedLabel = document.getElementById("guided-label");
-
-function setGuidedLearning(enabled) {
-	state.guidedLearning = enabled;
-	localStorage.setItem("guidedLearning", enabled ? "true" : "false");
-
-	if (guidedToggleInput) {
-		guidedToggleInput.checked = enabled;
-	}
-	if (guidedLabel) {
-		guidedLabel.textContent = enabled ? "Guided Learning" : "Ask Me Anything";
-	}
-}
-
-if (guidedToggleInput) {
-	guidedToggleInput.addEventListener("change", () => {
-		setGuidedLearning(guidedToggleInput.checked);
+if (subjectSelect) {
+	subjectSelect.addEventListener("change", () => {
+		setSessionSubject(subjectSelect.value);
 	});
 }
 
-// Restore guided learning state on load
-setGuidedLearning(state.guidedLearning);
+setSessionSubject(state.sessionSubject);
 
 async function initializeApp() {
 	if (!state.userId) {

@@ -1,5 +1,6 @@
 """Routes for creating and retrieving chat messages."""
 import asyncio
+import re
 from typing import List, Optional
 
 from bson import ObjectId
@@ -16,7 +17,6 @@ from schemas.message_schema import (
     SendMessageRequest,
 )
 from services.ai_services import (
-    generate_ai_reply,
     generate_ai_reply_with_mode,
     generate_quiz_feedback_reply,
     generate_quiz_payload,
@@ -32,6 +32,59 @@ chat_interaction_router = APIRouter(prefix="/chat", tags=["chat"])
 
 # --- SECURITY: Stop marker used to hide remaining text from frontend ---
 STOP_MARKER = "[user stopped response]"
+SESSION_SUBJECTS = ("Anyone", "Maths", "Physics", "Chemistry", "Coding")
+SUBJECT_KEYWORDS = {
+    "Maths": (
+        "math", "maths", "algebra", "geometry", "calculus", "equation",
+        "integral", "integrate", "derivative", "differentiate", "matrix",
+        "probability", "statistics", "trigonometry", "sine", "cosine",
+        "tangent", "limit", "logarithm", "polynomial", "factorization",
+    ),
+    "Physics": (
+        "physics", "mechanics", "kinematics", "dynamics", "force", "motion",
+        "velocity", "acceleration", "momentum", "energy", "work", "power",
+        "gravity", "gravitational", "newton", "friction", "torque",
+        "thermodynamics", "temperature", "heat", "wave", "optics",
+        "electricity", "electric", "magnetism", "magnetic", "circuit",
+        "voltage", "current", "resistance", "quantum", "relativity",
+    ),
+    "Chemistry": (
+        "chemistry", "atom", "molecule", "mole", "molar", "reaction",
+        "compound", "element", "periodic", "acid", "base", "salt", "ph",
+        "ionic", "covalent", "bond", "redox", "oxidation", "reduction",
+        "equilibrium", "stoichiometry", "organic", "inorganic", "hydrocarbon",
+        "polymer", "titration", "catalyst",
+    ),
+    "Coding": (
+        "code", "coding", "program", "programming", "python", "java",
+        "javascript", "c++", "c#", "algorithm", "data structure", "function",
+        "variable", "loop", "array", "list", "dictionary", "class", "object",
+        "api", "bug", "debug", "compile", "runtime", "script", "sql",
+        "database", "frontend", "backend", "recursion", "two sum", "leetcode",
+    ),
+}
+SUBJECT_SUGGESTIONS = {
+    "Maths": (
+        "Solve a quadratic equation step by step",
+        "Explain derivatives with an example",
+        "Teach me probability basics",
+    ),
+    "Physics": (
+        "Explain Newton's laws with real-life examples",
+        "Solve a velocity-acceleration problem",
+        "Teach me basics of electric circuits",
+    ),
+    "Chemistry": (
+        "Explain ionic vs covalent bonding",
+        "Teach me acid-base and pH basics",
+        "Solve a simple stoichiometry problem",
+    ),
+    "Coding": (
+        "Write Python code for binary search",
+        "Explain recursion with a simple example",
+        "Teach me time complexity with examples",
+    ),
+}
 
 # NOTE: Greeting/small-talk detection logic has been moved to:
 # backend/rename/backuprenamelogic.py
@@ -85,16 +138,120 @@ def _normalize_difficulty_level(value: Optional[str]) -> str:
     return "Neutral"
 
 
-def _build_prompt_for_api(content: str, api_prompt: Optional[str], difficulty_level: str) -> str:
+def _normalize_session_subject(value: Optional[str]) -> str:
+    """Normalize session subject selector values."""
+    if not value:
+        return "Anyone"
+
+    normalized = value.strip().lower()
+    mapping = {
+        "anyone": "Anyone",
+        "maths": "Maths",
+        "physics": "Physics",
+        "chemistry": "Chemistry",
+        "coding": "Coding",
+    }
+    candidate = mapping.get(normalized)
+    if candidate in SESSION_SUBJECTS:
+        return candidate
+    return "Anyone"
+
+
+def _subject_mismatch_message(session_subject: str) -> str:
+    return (
+        f"This question is not related to the current session subject ({session_subject}). "
+        f"Please ask a {session_subject}-related question or switch subject to Anyone."
+    )
+
+
+def _build_subject_guard_snippet(session_subject: str) -> str:
+    if session_subject == "Anyone":
+        return ""
+
+    mismatch_message = _subject_mismatch_message(session_subject)
+    return (
+        "[SESSION SUBJECT MODE]\n"
+        f"Current session subject: {session_subject}.\n"
+        f"Answer only in the context of {session_subject}.\n"
+        "If the user's question is unrelated, respond with ONLY this exact sentence and nothing else:\n"
+        f'"{mismatch_message}"'
+    )
+
+
+def _normalize_for_subject_match(value: str) -> str:
+    sanitized = re.sub(r"[^a-z0-9+#\s]", " ", value.lower())
+    collapsed = re.sub(r"\s+", " ", sanitized).strip()
+    return f" {collapsed} " if collapsed else ""
+
+
+def _detect_subject_matches(value: str) -> set[str]:
+    normalized = _normalize_for_subject_match(value)
+    if not normalized:
+        return set()
+
+    matches: set[str] = set()
+    for subject, keywords in SUBJECT_KEYWORDS.items():
+        for keyword in keywords:
+            probe = keyword if " " in keyword or "+" in keyword or "#" in keyword else f" {keyword} "
+            if probe in normalized:
+                matches.add(subject)
+                break
+    return matches
+
+
+def _is_subject_control_message(value: str) -> bool:
+    lowered = value.strip().lower()
+    if lowered == "summarize" or lowered.startswith("summarize "):
+        return True
+    return lowered in {"quiz me", "test me"}
+
+
+def _should_block_for_subject(user_message: str, session_subject: str) -> bool:
+    if session_subject == "Anyone":
+        return False
+
+    if _is_subject_control_message(user_message):
+        return False
+
+    matches = _detect_subject_matches(user_message)
+    if session_subject in matches:
+        return False
+
+    other_subject_matches = {subject for subject in matches if subject != session_subject}
+    return len(other_subject_matches) > 0
+
+
+def _build_subject_mismatch_response(session_subject: str) -> str:
+    base = _subject_mismatch_message(session_subject)
+    suggestions = SUBJECT_SUGGESTIONS.get(session_subject, ())
+    if not suggestions:
+        return base
+
+    suggestion_lines = "\n".join(f"- {suggestion}" for suggestion in suggestions)
+    return f"{base}\n\nYou can ask me things like:\n{suggestion_lines}"
+
+
+def _build_prompt_for_api(
+    content: str,
+    api_prompt: Optional[str],
+    difficulty_level: str,
+    session_subject: str,
+) -> str:
     """Build the exact prompt text sent to AI calls."""
     if api_prompt and api_prompt.strip():
-        return api_prompt.strip()
+        base_prompt = api_prompt.strip()
+    else:
+        base_content = content.strip() or content
+        if difficulty_level == "Neutral":
+            base_prompt = base_content
+        else:
+            base_prompt = f"{base_content} at {difficulty_level.lower()} level"
 
-    base_content = content.strip() or content
-    if difficulty_level == "Neutral":
-        return base_content
+    subject_guard = _build_subject_guard_snippet(session_subject)
+    if subject_guard and "[SESSION SUBJECT MODE]" not in base_prompt:
+        return f"{base_prompt}\n\n{subject_guard}"
 
-    return f"{base_content} at {difficulty_level.lower()} level"
+    return base_prompt
 
 
 @message_router.post("", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
@@ -235,9 +392,43 @@ async def send_message(
     # Detect quiz/summary triggers in user message
     content_lower = payload.content.strip().lower()
     difficulty = _normalize_difficulty_level(payload.difficulty_level)
-    guided = bool(payload.guided_learning)
-    prompt_for_api = _build_prompt_for_api(payload.content, payload.api_prompt, difficulty)
+    session_subject = _normalize_session_subject(payload.session_subject)
+    prompt_for_api = _build_prompt_for_api(
+        payload.content,
+        payload.api_prompt,
+        difficulty,
+        session_subject,
+    )
     response_level = difficulty if difficulty != "Neutral" else None
+
+    if _should_block_for_subject(payload.content, session_subject):
+        reply = _build_subject_mismatch_response(session_subject)
+
+        assistant_message = Message.create(
+            chat_id=chat_id,
+            user_id=user_id,
+            role="assistant",
+            content=reply,
+        )
+        assistant_document = assistant_message.to_document()
+        assistant_document["ai_generated"] = False
+        assistant_document["was_stopped"] = False
+        if response_level:
+            assistant_document["response_level"] = response_level
+
+        result = await db["messages"].insert_one(assistant_document)
+        response = {
+            "type": "text",
+            "content": reply,
+            "chat_id": str(chat_id),
+            "user_id": str(user_id),
+            "message_id": str(result.inserted_id),
+            "pending": False,
+            "response_level": response_level,
+        }
+        if new_title:
+            response["new_title"] = new_title
+        return response
 
     is_quiz = any(trigger in content_lower for trigger in ["quiz me", "test me"])
     is_summary = content_lower.strip() == "summarize" or content_lower.strip().startswith("summarize ")
@@ -248,7 +439,7 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            guided_learning=guided,
+            session_subject=session_subject,
         )
 
         # Save a text summary to DB so history makes sense
@@ -283,7 +474,7 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            guided_learning=guided,
+            session_subject=session_subject,
         )
 
         # Save a text summary to DB
@@ -316,7 +507,7 @@ async def send_message(
             response["new_title"] = new_title
         return response
 
-    # --- Normal chat flow (with mode settings) ---
+    # --- Normal chat flow (with difficulty setting) ---
     reply = process_logic(payload.content)
     used_ai = False
     if reply is None:
@@ -324,7 +515,7 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            guided_learning=guided,
+            session_subject=session_subject,
         )
         used_ai = True
 
@@ -483,7 +674,7 @@ async def submit_quiz_answer(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
     difficulty = _normalize_difficulty_level(payload.difficulty_level)
-    guided = bool(payload.guided_learning)
+    session_subject = _normalize_session_subject(payload.session_subject)
     response_level = difficulty if difficulty != "Neutral" else None
 
     # Generate AI feedback for the selected answer
@@ -495,7 +686,7 @@ async def submit_quiz_answer(
         correct_option=payload.correct_option,
         explanation=payload.explanation,
         difficulty_level=difficulty,
-        guided_learning=guided,
+        session_subject=session_subject,
     )
 
     is_correct = payload.selected_option.strip().upper() == payload.correct_option.strip().upper()

@@ -18,6 +18,7 @@ class Message:
 	role: MessageRole
 	content: str
 	created_at: datetime
+	command_dispatch_preview: Optional[str] = None
 	message_index: Optional[int] = None
 	_id: Optional[ObjectId] = None
 
@@ -29,6 +30,7 @@ class Message:
 		user_id: ObjectId,
 		role: MessageRole,
 		content: str,
+		command_dispatch_preview: Optional[str] = None,
 	) -> "Message":
 		"""Factory helper that assigns UTC timestamp."""
 		return cls(
@@ -37,6 +39,7 @@ class Message:
 			role=role,
 			content=content,
 			created_at=datetime.now(timezone.utc),
+			command_dispatch_preview=command_dispatch_preview,
 		)
 
 	def to_document(self) -> dict[str, object]:

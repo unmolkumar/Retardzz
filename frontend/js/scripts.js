@@ -34,11 +34,13 @@ const state = {
 	username: localStorage.getItem("username"),
 	activeChatId: localStorage.getItem("activeChatId"),
 	difficultyLevel: localStorage.getItem("difficultyLevel") || "Neutral",
-	sessionSubject: localStorage.getItem("sessionSubject") || "Anyone",
+	draftSubject: localStorage.getItem("draftSubject") || "Anyone",
+	chatMetaById: {},
 };
 
 // Cleanup legacy preference from removed guided-learning mode.
 localStorage.removeItem("guidedLearning");
+localStorage.removeItem("sessionSubject");
 
 // DOM elements
 const sidebar = document.getElementById("sidebar");
@@ -63,12 +65,30 @@ const loadingMessage = document.getElementById("loading-message");
 const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
 const uploadBtn = document.getElementById("upload-btn");
-const subjectSelect = document.getElementById("subject-select");
+const subjectSelectShell = document.getElementById("subject-select-shell");
+const subjectPickerBtn = document.getElementById("subject-picker-btn");
+const subjectPickerValue = document.getElementById("subject-picker-value");
+const subjectPickerPopup = document.getElementById("subject-picker-popup");
+const subjectOptionButtons = Array.from(document.querySelectorAll(".subject-option"));
+const subjectConfirmBox = document.getElementById("subject-confirm-box");
+const subjectConfirmText = document.getElementById("subject-confirm-text");
+const subjectConfirmYes = document.getElementById("subject-confirm-yes");
+const subjectConfirmNo = document.getElementById("subject-confirm-no");
+const subjectLockBadge = document.getElementById("subject-lock-badge");
+const subjectLockTooltip = document.getElementById("subject-lock-tooltip");
 const difficultyPicker = document.getElementById("difficulty-picker");
 const difficultyPickerBtn = document.getElementById("difficulty-picker-btn");
 const difficultyPickerLabel = document.getElementById("difficulty-picker-label");
 const difficultyPickerSymbol = document.getElementById("difficulty-picker-symbol");
 const difficultyPopup = document.getElementById("difficulty-popup");
+const commandSuggestions = document.getElementById("command-suggestions");
+const commandSuggestionsTitle = document.getElementById("command-suggestions-title");
+const commandSuggestionsWarning = document.getElementById("command-suggestions-warning");
+const commandSuggestionsList = document.getElementById("command-suggestions-list");
+const commandSuggestionsConfirm = document.getElementById("command-suggestions-confirm");
+const commandSuggestionsConfirmText = document.getElementById("command-suggestions-confirm-text");
+const commandSuggestionsConfirmYes = document.getElementById("command-suggestions-confirm-yes");
+const commandSuggestionsConfirmNo = document.getElementById("command-suggestions-confirm-no");
 
 // Mobile sidebar elements
 const mobileMenuBtn = document.getElementById("mobile-menu-btn");
@@ -76,6 +96,27 @@ const mobileCloseBtn = document.getElementById("mobile-close-btn");
 const sidebarOverlay = document.getElementById("sidebar-overlay");
 
 let isSendingMessage = false;
+let pendingSubjectSelection = null;
+
+const COMMAND_MENU_ITEMS = [
+	{ id: "quiz", token: "@quiz", desc: "Generate a quiz" },
+	{ id: "flashcard", token: "@flashcard", desc: "Generate flashcards" },
+	{ id: "mindmap", token: "@mindmap", desc: "Generate a mind map" },
+];
+
+const QUIZ_MODE_ITEMS = [
+	{ id: "visual", label: "Visual Quiz", desc: "Current quiz popup implementation", isDefault: true },
+	{ id: "quick", label: "Quick Quiz", desc: "Questions one by one directly in chat", isDefault: false },
+];
+
+const commandMenuState = {
+	visible: false,
+	stage: "commands", // commands | quiz-modes
+	highlightedIndex: 0,
+	selectedQuizMode: "visual",
+	pendingCommandId: null,
+	suppressedCommandToken: null,
+};
 
 // Helper to update title bar visibility (desktop + mobile)
 function updateTitleBar(title) {
@@ -286,6 +327,27 @@ document.addEventListener("click", (e) => {
 let generatingChatId = null;  // The chat_id currently generating a response
 let isGenerating = false;     // Whether AI response generation is in progress
 
+function syncSelectionControlsLock() {
+	const lockSubjectControl = isGenerating;
+	const lockDifficultyControl = isGenerating;
+
+	if (subjectPickerBtn) {
+		subjectPickerBtn.disabled = lockSubjectControl;
+	}
+
+	if (difficultyPickerBtn) {
+		difficultyPickerBtn.disabled = lockDifficultyControl;
+	}
+
+	if (lockSubjectControl) {
+		closeSubjectPickerPopup(true);
+	}
+
+	if (lockDifficultyControl) {
+		closeDifficultyPopup();
+	}
+}
+
 // --- PROGRESSIVE RENDERING STATE ---
 let renderState = {
 	fullResponseText: "",    // Full response from backend
@@ -307,12 +369,14 @@ function showStopButton() {
 		sendBtn.style.display = "none";
 		stopBtn.style.display = "flex";
 	}
+	syncSelectionControlsLock();
 }
 
 // Hide stop button, show send button
 function hideStopButton() {
 	stopBtn.style.display = "none";
 	sendBtn.style.display = "flex";
+	syncSelectionControlsLock();
 }
 
 // Update stop button visibility based on current state
@@ -1112,6 +1176,20 @@ function createMessageElement(message, animate = false) {
 		}
 		content.appendChild(richContent);
 	} else {
+		const commandPreviewRaw = typeof message.commandDispatchPreview === "string"
+			? message.commandDispatchPreview
+			: (typeof message.command_dispatch_preview === "string"
+				? message.command_dispatch_preview
+				: "");
+		const commandPreview = commandPreviewRaw.trim();
+
+		if (commandPreview) {
+			const commandPreviewEl = document.createElement("div");
+			commandPreviewEl.classList.add("user-command-preview");
+			commandPreviewEl.textContent = commandPreview;
+			content.appendChild(commandPreviewEl);
+		}
+
 		const userText = document.createElement("span");
 		userText.classList.add("user-message-text");
 		userText.textContent = trimmed;
@@ -1465,6 +1543,122 @@ function clearSession() {
 	localStorage.removeItem("userId");
 	localStorage.removeItem("username");
 	localStorage.removeItem("activeChatId");
+	localStorage.removeItem("draftSubject");
+	localStorage.removeItem("sessionSubject");
+}
+
+function getChatMeta(chatId) {
+	if (!chatId) {
+		return { subject: "Anyone", hasMessages: false };
+	}
+
+	const meta = state.chatMetaById[chatId];
+	if (!meta) {
+		return { subject: "Anyone", hasMessages: false };
+	}
+
+	return {
+		subject: normalizeSessionSubject(meta.subject),
+		hasMessages: Boolean(meta.hasMessages),
+	};
+}
+
+function setChatMeta(chatId, subject, hasMessages) {
+	if (!chatId) {
+		return;
+	}
+
+	state.chatMetaById[chatId] = {
+		subject: normalizeSessionSubject(subject),
+		hasMessages: Boolean(hasMessages),
+	};
+}
+
+function isActiveChatSubjectLocked() {
+	if (!state.activeChatId) {
+		return false;
+	}
+	return getChatMeta(state.activeChatId).hasMessages;
+}
+
+function getSubjectInitial(subject) {
+	const normalized = normalizeSessionSubject(subject);
+	if (normalized === "Anyone") {
+		return "";
+	}
+	return normalized.charAt(0).toUpperCase();
+}
+
+function updateSubjectPickerDisplay(subject) {
+	const normalizedSubject = normalizeSessionSubject(subject);
+
+	if (subjectPickerValue) {
+		subjectPickerValue.textContent = normalizedSubject;
+	}
+
+	subjectOptionButtons.forEach((optionButton) => {
+		optionButton.classList.toggle("active", optionButton.dataset.subject === normalizedSubject);
+	});
+}
+
+function updateActiveChatSubjectUi() {
+	const activeMeta = getChatMeta(state.activeChatId);
+	const isLocked = state.activeChatId ? activeMeta.hasMessages : false;
+	const unlockedSubject = state.activeChatId
+		? activeMeta.subject
+		: normalizeSessionSubject(state.draftSubject);
+
+	if (!isLocked) {
+		state.draftSubject = unlockedSubject;
+		localStorage.setItem("draftSubject", state.draftSubject);
+	}
+
+	const selectorValue = isLocked ? activeMeta.subject : state.draftSubject;
+	updateSubjectPickerDisplay(selectorValue);
+
+	if (subjectSelectShell) {
+		subjectSelectShell.classList.toggle("locked", isLocked);
+		subjectSelectShell.title = isLocked
+			? "You can't change subject now. This chat is locked."
+			: "";
+	}
+
+	if (subjectPickerBtn) {
+		subjectPickerBtn.setAttribute("aria-disabled", isLocked ? "true" : "false");
+		subjectPickerBtn.title = isLocked
+			? "You can't change subject now. This chat is locked."
+			: "Click to choose subject";
+	}
+
+	if (subjectLockTooltip) {
+		subjectLockTooltip.hidden = !isLocked;
+	}
+
+	if (subjectLockBadge) {
+		const badgeSubject = isLocked ? activeMeta.subject : state.draftSubject;
+		const badgeLetter = getSubjectInitial(badgeSubject);
+		if (!badgeLetter) {
+			subjectLockBadge.hidden = true;
+			subjectLockBadge.textContent = "";
+			subjectLockBadge.removeAttribute("title");
+		} else {
+			subjectLockBadge.hidden = false;
+			subjectLockBadge.textContent = badgeLetter;
+			subjectLockBadge.title = isLocked
+				? `${badgeSubject} chat (locked)`
+				: `Selected subject: ${badgeSubject}`;
+		}
+	}
+
+	if (isLocked || !state.activeChatId) {
+		pendingSubjectSelection = null;
+		if (subjectConfirmBox) {
+			subjectConfirmBox.hidden = true;
+		}
+		closeSubjectPickerPopup(true);
+	}
+
+	syncSelectionControlsLock();
 }
 
 async function loadChats() {
@@ -1485,6 +1679,7 @@ function renderChatList(chats) {
 	// Clean up orphaned dropdown menus from previous render
 	// (dropdowns are appended to body, not chatList, so they persist)
 	document.querySelectorAll(".chat-dropdown").forEach(d => d.remove());
+	state.chatMetaById = {};
 
 	chatList.innerHTML = "";
 	if (!Array.isArray(chats) || chats.length === 0) {
@@ -1495,11 +1690,16 @@ function renderChatList(chats) {
 		state.activeChatId = null;
 		localStorage.removeItem("activeChatId");
 		updateTitleBar("Saivo");
+		updateActiveChatSubjectUi();
 		return;
 	}
 
 	let activeFound = false;
 	chats.forEach((chat) => {
+		const chatSubject = normalizeSessionSubject(chat.subject || "Anyone");
+		const hasMessages = Boolean(chat.has_messages);
+		setChatMeta(chat.id, chatSubject, hasMessages);
+
 		const button = document.createElement("button");
 		button.className = "history-item";
 		button.dataset.chatId = chat.id;
@@ -1507,6 +1707,14 @@ function renderChatList(chats) {
 		const icon = document.createElement("ion-icon");
 		icon.setAttribute("name", "chatbubble-ellipses-outline");
 		button.appendChild(icon);
+
+		if (hasMessages && chatSubject !== "Anyone") {
+			const badge = document.createElement("span");
+			badge.className = "chat-subject-badge";
+			badge.textContent = getSubjectInitial(chatSubject);
+			badge.title = `${chatSubject} chat`;
+			button.appendChild(badge);
+		}
 
 		// Chat title with CSS ellipsis (no text modification)
 		const label = document.createElement("span");
@@ -1612,6 +1820,8 @@ function renderChatList(chats) {
 		localStorage.removeItem("activeChatId");
 		updateTitleBar("Saivo");
 	}
+
+	updateActiveChatSubjectUi();
 }
 
 function setActiveChat(chatId, title) {
@@ -1645,6 +1855,7 @@ function setActiveChat(chatId, title) {
 	state.activeChatId = chatId;
 	storeSession();
 	updateTitleBar(title || "Untitled Chat");
+	updateActiveChatSubjectUi();
 
 	const buttons = chatList.querySelectorAll(".history-item");
 	buttons.forEach((btn) => {
@@ -1680,10 +1891,13 @@ function createNewChat() {
 	// Clear active chat
 	state.activeChatId = null;
 	localStorage.removeItem("activeChatId");
+	state.draftSubject = "Anyone";
+	localStorage.setItem("draftSubject", state.draftSubject);
 	setSessionSubject("Anyone");
 	messagesContainer.innerHTML = "";
 	updateTitleBar("Saivo");
 	setChatStatus("", false);
+	updateActiveChatSubjectUi();
 
 	// Show welcome screen for new chat
 	showWelcomeScreen();
@@ -1700,6 +1914,7 @@ async function loadMessages() {
 	if (!state.activeChatId) {
 		messagesContainer.innerHTML = "";
 		showWelcomeScreen();  // Show welcome when no active chat
+		updateActiveChatSubjectUi();
 		return;
 	}
 
@@ -1717,6 +1932,10 @@ async function loadMessages() {
 			const idxB = Number.isInteger(b && b.message_index) ? b.message_index : 0;
 			return idxA - idxB;
 		});
+
+		const activeMeta = getChatMeta(state.activeChatId);
+		setChatMeta(state.activeChatId, activeMeta.subject, allMessages.length > 0);
+		updateActiveChatSubjectUi();
 
 		const rawQuizzes = Array.isArray(quizzesPayload && quizzesPayload.quizzes)
 			? quizzesPayload.quizzes
@@ -1788,6 +2007,8 @@ async function sendMessage(content) {
 			return;
 		}
 
+		const pendingSubjectBeforeCreate = normalizeSessionSubject(state.draftSubject);
+
 		try {
 			const chat = await apiFetch("/chats", {
 				method: "POST",
@@ -1795,8 +2016,10 @@ async function sendMessage(content) {
 			});
 
 			state.activeChatId = chat.id;
+			setChatMeta(chat.id, pendingSubjectBeforeCreate, false);
 			storeSession();
 			chatTitle.textContent = chat.title || "New Chat";
+			updateActiveChatSubjectUi();
 
 			// Reload chats to update sidebar
 			await loadChats();
@@ -1806,35 +2029,66 @@ async function sendMessage(content) {
 			buttons.forEach((btn) => {
 				btn.classList.toggle("active", btn.dataset.chatId === chat.id);
 			});
+
+			setChatMeta(chat.id, pendingSubjectBeforeCreate, false);
+			state.draftSubject = pendingSubjectBeforeCreate;
+			localStorage.setItem("draftSubject", state.draftSubject);
+			updateActiveChatSubjectUi();
 		} catch (error) {
 			setChatStatus(error.message || "Unable to create chat");
 			return;
 		}
 	}
 
+	const difficultyAtSend = normalizeDifficultyLevel(state.difficultyLevel);
+	const commandSendPayload = buildCommandSendPayload(trimmedContent, difficultyAtSend);
+	if (commandSendPayload && commandSendPayload.error) {
+		setChatStatus(commandSendPayload.error);
+		return;
+	}
+
+	const visibleUserContent = commandSendPayload
+		? commandSendPayload.visibleUserContent
+		: trimmedContent;
+	const contentForApi = commandSendPayload
+		? commandSendPayload.payloadContent
+		: trimmedContent;
+	const apiPrompt = commandSendPayload
+		? commandSendPayload.apiPrompt
+		: buildApiPrompt(trimmedContent, difficultyAtSend);
+	const forcedThinkingMode = commandSendPayload
+		? commandSendPayload.thinkingMode
+		: null;
+
 	isSendingMessage = true;
 	messageInput.value = "";
 	messageInput.style.height = "auto";
+	closeCommandSuggestions(true);
 	setChatStatus("", false);
 
-	const difficultyAtSend = normalizeDifficultyLevel(state.difficultyLevel);
-	const subjectAtSend = normalizeSessionSubject(state.sessionSubject);
-	const apiPrompt = buildApiPrompt(trimmedContent, difficultyAtSend);
+	const activeMetaBeforeSend = getChatMeta(state.activeChatId);
+	const isFirstMessageForChat = !activeMetaBeforeSend.hasMessages;
+	const selectedSubjectAtSend = normalizeSessionSubject(state.draftSubject);
 
 	// CHAT-SCOPED GENERATION: Track which chat is generating
 	generatingChatId = state.activeChatId;
 	isGenerating = true;
+	syncSelectionControlsLock();
 
-	const userMessage = { role: "user", content: trimmedContent };
+	const userMessage = { role: "user", content: visibleUserContent };
+	if (commandSendPayload && commandSendPayload.commandDispatchPreview) {
+		userMessage.commandDispatchPreview = commandSendPayload.commandDispatchPreview;
+	}
 	appendMessage(userMessage, false);
 	chatArea.scrollTop = chatArea.scrollHeight;
 
 	const thinkingStartTime = Date.now();
-	const thinkingMode = isMindmapRequestPrompt(trimmedContent)
+	const thinkingSeed = contentForApi;
+	const thinkingMode = forcedThinkingMode || (isMindmapRequestPrompt(thinkingSeed)
 		? "mindmap"
-		: (isFlashcardRequestPrompt(trimmedContent)
+		: (isFlashcardRequestPrompt(thinkingSeed)
 		? "flashcard"
-		: (isQuizRequestPrompt(trimmedContent) ? "quiz" : "normal"));
+		: (isQuizRequestPrompt(thinkingSeed) ? "quiz" : "normal")));
 	showThinkingIndicator(thinkingMode);
 
 	try {
@@ -1843,10 +2097,13 @@ async function sendMessage(content) {
 			body: {
 				chat_id: state.activeChatId,
 				user_id: state.userId,
-				content: trimmedContent,
+				content: contentForApi,
 				api_prompt: apiPrompt,
+				command_dispatch_preview: commandSendPayload
+					? commandSendPayload.commandDispatchPreview
+					: undefined,
 				difficulty_level: difficultyAtSend,
-				session_subject: subjectAtSend,
+				selected_subject: isFirstMessageForChat ? selectedSubjectAtSend : undefined,
 			},
 		});
 
@@ -1860,13 +2117,22 @@ async function sendMessage(content) {
 				if (!response) return;
 
 				const responseLevel = response.response_level || (difficultyAtSend !== "Neutral" ? difficultyAtSend : null);
+				const lockedChatSubject = normalizeSessionSubject(
+					response.chat_subject || (isFirstMessageForChat ? selectedSubjectAtSend : activeMetaBeforeSend.subject)
+				);
+				setChatMeta(state.activeChatId, lockedChatSubject, true);
+				updateActiveChatSubjectUi();
+
+				if (isFirstMessageForChat) {
+					await loadChats();
+				}
 
 				// REAL-TIME TITLE UPDATE: If server renamed the chat, update UI
 				if (response.new_title) {
 					chatTitle.textContent = response.new_title;
 					const chatItem = chatList.querySelector(`[data-chat-id="${state.activeChatId}"]`);
 					if (chatItem) {
-						const titleSpan = chatItem.querySelector("span");
+						const titleSpan = chatItem.querySelector(".chat-title");
 						if (titleSpan) {
 							titleSpan.textContent = response.new_title;
 						}
@@ -1991,7 +2257,9 @@ async function sendMessage(content) {
 		generatingChatId = null;
 		hideStopButton();
 
-		messageInput.value = trimmedContent;
+		messageInput.value = content;
+		autoResizeTextarea();
+		updateCommandSuggestionsFromInput();
 		messageInput.focus();
 		setChatStatus(error.message || "Unable to send message");
 	} finally {
@@ -4538,7 +4806,6 @@ async function fetchQuizModalTip(questionIndex, question, selectedKey) {
 				correct_option: question.correct_option,
 				explanation: question.explanation || "",
 				difficulty_level: state.difficultyLevel,
-				session_subject: normalizeSessionSubject(state.sessionSubject),
 			},
 		});
 		feedbackText = result && typeof result.feedback === "string" ? result.feedback : "";
@@ -5034,7 +5301,6 @@ async function handleQuizAnswer(selectedBtn, allButtons, questionDiv, questionDa
 				correct_option: questionData.correct_option,
 				explanation: questionData.explanation || "",
 				difficulty_level: state.difficultyLevel,
-				session_subject: normalizeSessionSubject(state.sessionSubject),
 			},
 		});
 
@@ -5185,14 +5451,7 @@ function buildApiPrompt(content, difficultyLevel) {
 		prompt = `${prompt} at ${normalizedDifficulty.toLowerCase()} level`;
 	}
 
-	const normalizedSubject = normalizeSessionSubject(state.sessionSubject);
-	if (normalizedSubject === "Anyone") {
-		return prompt;
-	}
-
-	const mismatchMessage = `This question is not related to the current session subject (${normalizedSubject}). Please ask a ${normalizedSubject}-related question or switch subject to Anyone.`;
-
-	return `${prompt}\n\n[SESSION SUBJECT MODE]\nCurrent session subject: ${normalizedSubject}.\nAnswer only in the context of ${normalizedSubject}.\nIf the user's question is unrelated, respond with ONLY this exact sentence and nothing else:\n"${mismatchMessage}"`;
+	return prompt;
 }
 
 function setDifficultyLevel(level) {
@@ -5242,22 +5501,492 @@ function toggleDifficultyPopup() {
 	}
 }
 
+function resetCommandMenuState() {
+	commandMenuState.visible = false;
+	commandMenuState.stage = "commands";
+	commandMenuState.highlightedIndex = 0;
+	commandMenuState.selectedQuizMode = "visual";
+	commandMenuState.pendingCommandId = null;
+}
+
+function resolveCommandIdFromKey(commandKey) {
+	const normalizedCommand = String(commandKey || "").toLowerCase();
+	if (normalizedCommand === "q" || normalizedCommand.startsWith("quiz")) {
+		return "quiz";
+	}
+	if (
+		normalizedCommand === "f" ||
+		normalizedCommand.startsWith("flashcard") ||
+		normalizedCommand.startsWith("flashcards")
+	) {
+		return "flashcard";
+	}
+	if (
+		normalizedCommand === "m" ||
+		normalizedCommand.startsWith("mindmap") ||
+		normalizedCommand.startsWith("mind")
+	) {
+		return "mindmap";
+	}
+	return null;
+}
+
+function commandTokenFromId(commandId) {
+	if (commandId === "quiz") return "quiz";
+	if (commandId === "flashcard") return "flashcard";
+	if (commandId === "mindmap") return "mindmap";
+	return null;
+}
+
+function isCommandSuggestionsVisible() {
+	return Boolean(commandSuggestions && !commandSuggestions.hidden && commandMenuState.visible);
+}
+
+function getCommandItemsForStage() {
+	return commandMenuState.stage === "quiz-modes" ? QUIZ_MODE_ITEMS : COMMAND_MENU_ITEMS;
+}
+
+function closeCommandSuggestions(resetState = false) {
+	if (!commandSuggestions) {
+		return;
+	}
+
+	commandSuggestions.hidden = true;
+	commandSuggestions.setAttribute("aria-hidden", "true");
+	commandMenuState.visible = false;
+
+	if (resetState) {
+		resetCommandMenuState();
+	}
+}
+
+function openCommandSuggestions() {
+	if (!commandSuggestions) {
+		return;
+	}
+
+	commandSuggestions.hidden = false;
+	commandSuggestions.setAttribute("aria-hidden", "false");
+	commandMenuState.visible = true;
+}
+
+function inferCommandHighlightIndex(commandKey) {
+	if (!commandKey) {
+		return 0;
+	}
+
+	const firstLetter = commandKey.trim().charAt(0).toLowerCase();
+	if (firstLetter === "f") {
+		return 1;
+	}
+	if (firstLetter === "m") {
+		return 2;
+	}
+	return 0;
+}
+
+function getSlashCandidateFromInput(rawValue) {
+	if (typeof rawValue !== "string") {
+		return null;
+	}
+
+	const trimmedLeft = rawValue.replace(/^\s+/, "");
+	if (!trimmedLeft) {
+		return null;
+	}
+
+	const trigger = trimmedLeft.charAt(0);
+	if (trigger !== "@" && trigger !== "\\") {
+		return null;
+	}
+
+	const tokenMatch = trimmedLeft.match(/^([@\\][^\s]*)/);
+	const token = tokenMatch ? tokenMatch[1] : trigger;
+	const commandKey = token.slice(1).toLowerCase();
+	const topicPart = trimmedLeft.replace(/^[@\\][^\s]*/, "").trimStart();
+
+	return {
+		trigger,
+		token,
+		commandKey,
+		topicPart,
+	};
+}
+
+function ensureInputToken(commandToken) {
+	if (!messageInput) {
+		return;
+	}
+
+	const rawValue = messageInput.value || "";
+	const leadingWhitespace = (rawValue.match(/^\s*/) || [""])[0];
+	const trimmedLeft = rawValue.slice(leadingWhitespace.length);
+	const topicPart = trimmedLeft.replace(/^[@\\][^\s]*/, "").trimStart();
+
+	const nextValue = `${leadingWhitespace}${commandToken}${topicPart ? ` ${topicPart}` : " "}`;
+	messageInput.value = nextValue;
+	autoResizeTextarea();
+	messageInput.focus();
+	messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+}
+
+function renderCommandSuggestionList() {
+	if (!commandSuggestionsList || !commandSuggestionsTitle || !commandSuggestionsWarning) {
+		return;
+	}
+
+	const items = getCommandItemsForStage();
+	const maxIndex = Math.max(0, items.length - 1);
+	commandMenuState.highlightedIndex = Math.min(commandMenuState.highlightedIndex, maxIndex);
+
+	if (commandMenuState.stage === "quiz-modes") {
+		commandSuggestionsTitle.textContent = "@quiz options";
+		commandSuggestionsWarning.hidden = false;
+		commandSuggestionsWarning.textContent = "Select quiz mode before topic. Visual Quiz is default.";
+	} else {
+		commandSuggestionsTitle.textContent = "Commands";
+		commandSuggestionsWarning.hidden = true;
+	}
+
+	commandSuggestionsList.innerHTML = "";
+	items.forEach((item, index) => {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "command-suggestion-item";
+		button.setAttribute("role", "option");
+		button.dataset.index = String(index);
+		button.classList.toggle("active", index === commandMenuState.highlightedIndex);
+
+		const main = document.createElement("span");
+		main.className = "command-suggestion-main";
+
+		const token = document.createElement("span");
+		token.className = "command-suggestion-token";
+		token.textContent = commandMenuState.stage === "quiz-modes" ? item.label : item.token;
+
+		const desc = document.createElement("span");
+		desc.className = "command-suggestion-desc";
+		desc.textContent = item.desc;
+
+		main.appendChild(token);
+		main.appendChild(desc);
+
+		const meta = document.createElement("span");
+		meta.className = "command-suggestion-meta";
+		if (commandMenuState.stage === "quiz-modes" && item.isDefault) {
+			meta.textContent = "Default";
+		} else {
+			meta.textContent = index === commandMenuState.highlightedIndex ? "Enter" : "";
+		}
+
+		button.appendChild(main);
+		button.appendChild(meta);
+
+		button.addEventListener("click", () => {
+			commandMenuState.highlightedIndex = index;
+			selectHighlightedCommandSuggestion();
+		});
+
+		commandSuggestionsList.appendChild(button);
+	});
+
+	if (commandSuggestionsConfirm) {
+		commandSuggestionsConfirm.hidden = true;
+	}
+}
+
+function moveCommandSuggestionHighlight(direction) {
+	const items = getCommandItemsForStage();
+	if (!items.length) {
+		return;
+	}
+
+	const lastIndex = items.length - 1;
+	if (direction > 0) {
+		commandMenuState.highlightedIndex = commandMenuState.highlightedIndex >= lastIndex
+			? 0
+			: commandMenuState.highlightedIndex + 1;
+	} else {
+		commandMenuState.highlightedIndex = commandMenuState.highlightedIndex <= 0
+			? lastIndex
+			: commandMenuState.highlightedIndex - 1;
+	}
+
+	renderCommandSuggestionList();
+}
+
+function selectHighlightedCommandSuggestion() {
+	const items = getCommandItemsForStage();
+	const selected = items[commandMenuState.highlightedIndex];
+	if (!selected) {
+		return false;
+	}
+
+	if (commandMenuState.stage === "commands") {
+		ensureInputToken(selected.token);
+		if (selected.id === "quiz") {
+			commandMenuState.pendingCommandId = "quiz";
+			commandMenuState.selectedQuizMode = "visual";
+			commandMenuState.stage = "quiz-modes";
+			commandMenuState.highlightedIndex = 0;
+			openCommandSuggestions();
+			renderCommandSuggestionList();
+			showToast("Choose quiz mode, then type topic.");
+			return true;
+		}
+
+		commandMenuState.pendingCommandId = selected.id;
+		commandMenuState.suppressedCommandToken = commandTokenFromId(selected.id);
+		closeCommandSuggestions();
+		showToast(`${selected.token} selected. Type topic and send.`);
+		return true;
+	}
+
+	commandMenuState.selectedQuizMode = selected.id;
+	commandMenuState.suppressedCommandToken = "quiz";
+	closeCommandSuggestions();
+	showToast(`${selected.label} selected. Now type quiz topic.`);
+	return true;
+}
+
+function updateCommandSuggestionsFromInput() {
+	if (!messageInput) {
+		return;
+	}
+
+	const candidate = getSlashCandidateFromInput(messageInput.value);
+	if (!candidate) {
+		commandMenuState.suppressedCommandToken = null;
+		closeCommandSuggestions(true);
+		return;
+	}
+
+	if (commandMenuState.suppressedCommandToken) {
+		if (candidate.commandKey === commandMenuState.suppressedCommandToken) {
+			closeCommandSuggestions();
+			return;
+		}
+
+		commandMenuState.suppressedCommandToken = null;
+	}
+
+	if (candidate.commandKey && !candidate.commandKey.startsWith("quiz")) {
+		commandMenuState.selectedQuizMode = "visual";
+		commandMenuState.pendingCommandId = null;
+	}
+
+	if (candidate.topicPart) {
+		closeCommandSuggestions();
+		return;
+	}
+
+	if (commandMenuState.stage === "quiz-modes") {
+		if (!candidate.commandKey.startsWith("quiz")) {
+			commandMenuState.stage = "commands";
+			commandMenuState.highlightedIndex = inferCommandHighlightIndex(candidate.commandKey);
+			renderCommandSuggestionList();
+			openCommandSuggestions();
+			return;
+		}
+
+		if (candidate.topicPart) {
+			closeCommandSuggestions();
+			return;
+		}
+
+		openCommandSuggestions();
+		renderCommandSuggestionList();
+		return;
+	}
+
+	commandMenuState.stage = "commands";
+	commandMenuState.highlightedIndex = inferCommandHighlightIndex(candidate.commandKey);
+	openCommandSuggestions();
+	renderCommandSuggestionList();
+}
+
+function parseCommandMessage(rawMessage) {
+	const candidate = getSlashCandidateFromInput(rawMessage || "");
+	if (!candidate) {
+		return null;
+	}
+
+	const commandId = resolveCommandIdFromKey(candidate.commandKey);
+
+	if (!commandId) {
+		return null;
+	}
+
+	return {
+		commandId,
+		topic: candidate.topicPart.trim(),
+	};
+}
+
+function buildCommandSendPayload(rawMessage, difficultyLevel) {
+	const parsedCommand = parseCommandMessage(rawMessage);
+	if (!parsedCommand) {
+		return null;
+	}
+
+	if (!parsedCommand.topic) {
+		return {
+			error: "Please add a topic after the command. Example: @quiz neural networks",
+		};
+	}
+
+	const topic = parsedCommand.topic;
+	let payloadContent = topic;
+	let thinkingMode = "normal";
+	let apiPrompt = buildApiPrompt(topic, difficultyLevel);
+	let commandDispatchPreview = "";
+
+	if (parsedCommand.commandId === "quiz") {
+		const quizMode = commandMenuState.selectedQuizMode === "quick" ? "quick" : "visual";
+		if (quizMode === "visual") {
+			payloadContent = `quiz me on ${topic}`;
+			thinkingMode = "quiz";
+			commandDispatchPreview = "@quiz visual ->";
+			apiPrompt = `${apiPrompt}\n\n[VISUAL QUIZ COMMAND]\nGenerate a quiz for topic \"${topic}\" in strict quiz JSON format.`;
+		} else {
+			payloadContent = topic;
+			thinkingMode = "normal";
+			commandDispatchPreview = "@quiz quick ->";
+			apiPrompt = `${apiPrompt}\n\n[QUICK QUIZ COMMAND]\nStart a quick quiz in chat about \"${topic}\". Ask one MCQ at a time with options A-D, wait for user answer, then continue. Do not output JSON.`;
+		}
+	} else if (parsedCommand.commandId === "flashcard") {
+		payloadContent = `flashcards on ${topic}`;
+		thinkingMode = "flashcard";
+		commandDispatchPreview = "@flashcard ->";
+		apiPrompt = `${apiPrompt}\n\n[FLASHCARD COMMAND]\nGenerate flashcards for topic \"${topic}\" in strict flashcard JSON format.`;
+	} else if (parsedCommand.commandId === "mindmap") {
+		payloadContent = `mind map on ${topic}`;
+		thinkingMode = "mindmap";
+		commandDispatchPreview = "@mindmap ->";
+		apiPrompt = `${apiPrompt}\n\n[MINDMAP COMMAND]\nGenerate a mind map for topic \"${topic}\" in strict mind map JSON format.`;
+	}
+
+	return {
+		visibleUserContent: topic,
+		payloadContent,
+		apiPrompt,
+		thinkingMode,
+		commandDispatchPreview,
+	};
+}
+
+function resetSubjectConfirmation() {
+	pendingSubjectSelection = null;
+	if (subjectConfirmBox) {
+		subjectConfirmBox.hidden = true;
+	}
+	if (subjectConfirmText) {
+		subjectConfirmText.textContent = "";
+	}
+}
+
+function closeSubjectPickerPopup(resetPending = false) {
+	if (!subjectSelectShell || !subjectPickerPopup) {
+		return;
+	}
+
+	subjectSelectShell.classList.remove("open");
+	subjectPickerPopup.setAttribute("aria-hidden", "true");
+	if (subjectPickerBtn) {
+		subjectPickerBtn.setAttribute("aria-expanded", "false");
+	}
+
+	if (resetPending) {
+		resetSubjectConfirmation();
+	}
+}
+
+function openSubjectPickerPopup() {
+	if (!subjectSelectShell || !subjectPickerPopup) {
+		return;
+	}
+
+	subjectSelectShell.classList.add("open");
+	subjectPickerPopup.setAttribute("aria-hidden", "false");
+	if (subjectPickerBtn) {
+		subjectPickerBtn.setAttribute("aria-expanded", "true");
+	}
+}
+
+function toggleSubjectPickerPopup() {
+	if (!subjectSelectShell || !subjectPickerPopup) {
+		return;
+	}
+
+	const shouldOpen = !subjectSelectShell.classList.contains("open");
+	if (shouldOpen) {
+		openSubjectPickerPopup();
+		return;
+	}
+
+	closeSubjectPickerPopup(true);
+}
+
 function setSessionSubject(subject) {
 	const normalizedSubject = normalizeSessionSubject(subject);
 	if (!SESSION_SUBJECTS.includes(normalizedSubject)) {
 		return;
 	}
 
-	state.sessionSubject = normalizedSubject;
-	localStorage.setItem("sessionSubject", normalizedSubject);
+	state.draftSubject = normalizedSubject;
+	localStorage.setItem("draftSubject", normalizedSubject);
+	resetSubjectConfirmation();
 
-	if (subjectSelect) {
-		subjectSelect.value = normalizedSubject;
+	if (state.activeChatId && !isActiveChatSubjectLocked()) {
+		setChatMeta(state.activeChatId, normalizedSubject, false);
 	}
+
+	updateActiveChatSubjectUi();
+}
+
+function requestSubjectConfirmation(candidateSubject) {
+	const currentSubject = normalizeSessionSubject(state.draftSubject);
+	const nextSubject = normalizeSessionSubject(candidateSubject);
+
+	if (nextSubject === currentSubject) {
+		showToast("This subject is already selected.");
+		return false;
+	}
+
+	pendingSubjectSelection = nextSubject;
+	if (subjectConfirmText) {
+		subjectConfirmText.textContent = `Do you want to choose ${nextSubject} for this session? This action can't be undone after the first message in this chat.`;
+	}
+	if (subjectConfirmBox) {
+		subjectConfirmBox.hidden = false;
+	}
+	return true;
+}
+
+function confirmSubjectForSession() {
+	if (!pendingSubjectSelection) {
+		showToast("Pick a subject first.");
+		return false;
+	}
+
+	const subjectToApply = normalizeSessionSubject(pendingSubjectSelection);
+	setSessionSubject(subjectToApply);
+	closeSubjectPickerPopup(true);
+	showToast(`${subjectToApply} selected. It will lock after the first message.`);
+	return true;
+}
+
+function cancelSubjectConfirmation() {
+	resetSubjectConfirmation();
 }
 
 if (difficultyPickerBtn) {
 	difficultyPickerBtn.addEventListener("click", (event) => {
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing level.");
+			return;
+		}
+
 		event.stopPropagation();
 		toggleDifficultyPopup();
 	});
@@ -5265,6 +5994,11 @@ if (difficultyPickerBtn) {
 
 difficultyOptions.forEach(option => {
 	option.addEventListener("click", (event) => {
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing level.");
+			return;
+		}
+
 		event.stopPropagation();
 		setDifficultyLevel(option.dataset.level);
 		closeDifficultyPopup();
@@ -5275,11 +6009,24 @@ document.addEventListener("click", (event) => {
 	if (difficultyPicker && !difficultyPicker.contains(event.target)) {
 		closeDifficultyPopup();
 	}
+
+	const clickInsideCommandUi =
+		(commandSuggestions && commandSuggestions.contains(event.target)) ||
+		(messageInput && messageInput.contains(event.target));
+	if (!clickInsideCommandUi) {
+		closeCommandSuggestions(true);
+	}
+
+	if (subjectSelectShell && !subjectSelectShell.contains(event.target)) {
+		closeSubjectPickerPopup(true);
+	}
 });
 
 document.addEventListener("keydown", (event) => {
 	if (event.key === "Escape") {
 		closeDifficultyPopup();
+		closeCommandSuggestions(true);
+		closeSubjectPickerPopup(true);
 	}
 });
 
@@ -5288,13 +6035,61 @@ if (state.difficultyLevel) {
 	setDifficultyLevel(state.difficultyLevel);
 }
 
-if (subjectSelect) {
-	subjectSelect.addEventListener("change", () => {
-		setSessionSubject(subjectSelect.value);
+if (subjectPickerBtn) {
+	subjectPickerBtn.addEventListener("click", (event) => {
+		event.stopPropagation();
+
+		if (isActiveChatSubjectLocked()) {
+			showToast("Subject is locked for this chat. Start a new chat to choose another subject.");
+			return;
+		}
+
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing subject.");
+			return;
+		}
+
+		toggleSubjectPickerPopup();
 	});
 }
 
-setSessionSubject(state.sessionSubject);
+subjectOptionButtons.forEach((optionButton) => {
+	optionButton.addEventListener("click", (event) => {
+		event.stopPropagation();
+
+		if (isActiveChatSubjectLocked()) {
+			showToast("You can't change subject now. This chat is locked.");
+			return;
+		}
+
+		if (isGenerating) {
+			showToast("Please wait for the current response to finish before changing subject.");
+			return;
+		}
+
+		const candidate = normalizeSessionSubject(optionButton.dataset.subject || "Anyone");
+		requestSubjectConfirmation(candidate);
+	});
+});
+
+if (subjectConfirmYes) {
+	subjectConfirmYes.addEventListener("click", (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		confirmSubjectForSession();
+	});
+}
+
+if (subjectConfirmNo) {
+	subjectConfirmNo.addEventListener("click", (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		cancelSubjectConfirmation();
+	});
+}
+
+setSessionSubject(state.draftSubject);
+closeSubjectPickerPopup(true);
 
 async function initializeApp() {
 	if (!state.userId) {
@@ -5345,15 +6140,56 @@ function autoResizeTextarea() {
 	messageInput.style.height = messageInput.scrollHeight + 'px';
 }
 
-messageInput.addEventListener('input', autoResizeTextarea);
+messageInput.addEventListener('input', () => {
+	autoResizeTextarea();
+	updateCommandSuggestionsFromInput();
+});
 
 // Reset textarea height after form submission
 function resetTextareaHeight() {
 	messageInput.style.height = 'auto';
 }
 
+messageInput.addEventListener('keydown', function (e) {
+	if (!isCommandSuggestionsVisible()) {
+		if (e.key === 'Escape') {
+			closeCommandSuggestions(true);
+		}
+		return;
+	}
+
+	if (e.key === 'ArrowDown') {
+		e.preventDefault();
+		moveCommandSuggestionHighlight(1);
+		return;
+	}
+
+	if (e.key === 'ArrowUp') {
+		e.preventDefault();
+		moveCommandSuggestionHighlight(-1);
+		return;
+	}
+
+	if (e.key === 'Escape') {
+		e.preventDefault();
+		closeCommandSuggestions(true);
+		return;
+	}
+
+	if (e.key === 'Enter' && !e.shiftKey) {
+		e.preventDefault();
+		selectHighlightedCommandSuggestion();
+		return;
+	}
+});
+
 messageInput.addEventListener('keypress', function (e) {
 	if (e.key === 'Enter' && !e.shiftKey) {
+		if (isCommandSuggestionsVisible()) {
+			e.preventDefault();
+			return;
+		}
+
 		e.preventDefault();
 		messageForm.dispatchEvent(new Event('submit'));
 	}
@@ -5387,8 +6223,8 @@ logoutButton.addEventListener("click", () => {
 
 messageForm.addEventListener("submit", (event) => {
 	event.preventDefault();
-	const content = messageInput.value.trim();
-	if (!content) {
+	const content = messageInput.value;
+	if (!content || !content.trim()) {
 		return;
 	}
 	sendMessage(content);

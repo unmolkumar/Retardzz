@@ -23,6 +23,8 @@ from services.ai_services import (
     generate_quiz_feedback_reply,
     generate_quiz_payload,
     generate_summary_payload,
+    is_valid_structured_topic_candidate,
+    structured_refusal_message,
 )
 from services.logic_engine import process_logic
 # Import the new rename module
@@ -215,11 +217,26 @@ def _normalize_session_subject(value: Optional[str]) -> str:
     return "Anyone"
 
 
+def _resolve_chat_subject(chat_document: dict[str, object]) -> str:
+    """Resolve normalized chat subject from persisted chat document."""
+    return _normalize_session_subject(str(chat_document.get("subject", "Anyone")))
+
+
+def _selected_subject_from_payload(payload: SendMessageRequest) -> str:
+    """Resolve subject selected before first message; keeps backward compatibility."""
+    return _normalize_session_subject(payload.selected_subject or payload.session_subject)
+
+
+def _enrich_chat_response(response: dict[str, object], chat_subject: str, new_title: Optional[str]) -> dict[str, object]:
+    """Attach chat metadata returned to frontend after /chat/send."""
+    response["chat_subject"] = chat_subject
+    if new_title:
+        response["new_title"] = new_title
+    return response
+
+
 def _subject_mismatch_message(session_subject: str) -> str:
-    return (
-        f"This question is not related to the current session subject ({session_subject}). "
-        f"Please ask a {session_subject}-related question or switch subject to Anyone."
-    )
+    return f"This chat is locked to {session_subject}. Please ask a {session_subject}-related question."
 
 
 def _build_subject_guard_snippet(session_subject: str) -> str:
@@ -305,6 +322,30 @@ def _is_mindmap_request(value: str) -> bool:
         return True
 
     return bool(re.search(r"\bmind\s*map\b\s+(?:on|about|for|of)\b", lowered))
+
+
+def _resolve_structured_request_kind(value: str, api_prompt: Optional[str] = None) -> Optional[str]:
+    """Resolve requested structured generation kind from user content and command markers."""
+    marker_source = (api_prompt or "").upper()
+    if "[MINDMAP COMMAND]" in marker_source:
+        return "mindmap"
+    if "[FLASHCARD COMMAND]" in marker_source:
+        return "flashcard"
+    if "[VISUAL QUIZ COMMAND]" in marker_source or "[QUICK QUIZ COMMAND]" in marker_source:
+        return "quiz"
+
+    if _is_mindmap_request(value):
+        return "mindmap"
+    if _is_flashcard_request(value):
+        return "flashcard"
+    if _is_quiz_request(value):
+        return "quiz"
+    return None
+
+
+def _is_quick_quiz_mode_request(api_prompt: Optional[str]) -> bool:
+    marker_source = (api_prompt or "").upper()
+    return "[QUICK QUIZ COMMAND]" in marker_source
 
 
 def _normalize_person_target(raw_value: str) -> str:
@@ -488,25 +529,53 @@ def _enforce_exact_subject_mismatch_reply(reply: str, session_subject: str) -> s
     return reply
 
 
+def _strip_subject_guard_from_prompt(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    cleaned = re.sub(
+        r"\[SESSION SUBJECT MODE\][\s\S]*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+    cleaned = re.sub(
+        r"This question is not related to the current session subject \([^\)]*\)\.\s*Please ask a [^\n]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    cleaned = re.sub(
+        r"This chat is locked to [^\.]+\.\s*Please ask a [^\.]+-related question\.",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned
+
+
 def _build_prompt_for_api(
     content: str,
     api_prompt: Optional[str],
     difficulty_level: str,
-    session_subject: str,
 ) -> str:
     """Build the exact prompt text sent to AI calls."""
     if api_prompt and api_prompt.strip():
-        base_prompt = api_prompt.strip()
+        candidate_prompt = _strip_subject_guard_from_prompt(api_prompt.strip())
+        if candidate_prompt:
+            base_prompt = candidate_prompt
+        else:
+            base_content = content.strip() or content
+            if difficulty_level == "Neutral":
+                base_prompt = base_content
+            else:
+                base_prompt = f"{base_content} at {difficulty_level.lower()} level"
     else:
         base_content = content.strip() or content
         if difficulty_level == "Neutral":
             base_prompt = base_content
         else:
             base_prompt = f"{base_content} at {difficulty_level.lower()} level"
-
-    subject_guard = _build_subject_guard_snippet(session_subject)
-    if subject_guard and "[SESSION SUBJECT MODE]" not in base_prompt:
-        return f"{base_prompt}\n\n{subject_guard}"
 
     return base_prompt
 
@@ -529,6 +598,7 @@ async def create_message(
         user_id=user_id,
         role=payload.role,
         content=payload.content,
+        command_dispatch_preview=payload.command_dispatch_preview,
     )
     message.message_index = message_index
     result = await db["messages"].insert_one(message.to_document())
@@ -542,6 +612,7 @@ async def create_message(
         created_at=message.created_at,
         message_index=message_index,
         response_level=None,
+        command_dispatch_preview=message.command_dispatch_preview,
     )
 
 
@@ -592,6 +663,9 @@ async def list_messages(
         # SECURITY: Sanitize assistant responses to hide stopped text
         # User messages pass through unchanged, assistant messages are sanitized
         sanitized_content = _sanitize_response_content(raw_content) if role == "assistant" else raw_content
+        command_dispatch_preview = document.get("command_dispatch_preview")
+        if not isinstance(command_dispatch_preview, str):
+            command_dispatch_preview = None
         
         messages.append(
             MessageResponse(
@@ -603,6 +677,7 @@ async def list_messages(
                 created_at=document["created_at"],
                 message_index=sequential_index,
                 response_level=document.get("response_level"),
+                command_dispatch_preview=command_dispatch_preview,
             )
         )
 
@@ -628,6 +703,24 @@ async def send_message(
     if not chat_document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
+    existing_message = await db["messages"].find_one({"chat_id": chat_id}, {"_id": 1})
+    is_first_message_for_chat = existing_message is None
+
+    # The chat subject is chosen once (first message) and then stays locked forever.
+    chat_subject = _resolve_chat_subject(chat_document)
+    if is_first_message_for_chat:
+        chat_subject = _selected_subject_from_payload(payload)
+        await db["chats"].update_one(
+            {"_id": chat_id},
+            {"$set": {"subject": chat_subject}},
+        )
+    elif "subject" not in chat_document:
+        # Backfill legacy chats that predate the subject field.
+        await db["chats"].update_one(
+            {"_id": chat_id},
+            {"$set": {"subject": chat_subject}},
+        )
+
     # Save user message with sequential index.
     next_index = await _next_message_index(db, chat_id)
     assistant_index = next_index + 1
@@ -637,6 +730,7 @@ async def send_message(
         user_id=user_id,
         role="user",
         content=payload.content,
+        command_dispatch_preview=payload.command_dispatch_preview,
     )
     user_message.message_index = next_index
     await db["messages"].insert_one(user_message.to_document())
@@ -690,22 +784,55 @@ async def send_message(
     # Detect quiz/summary triggers in user message
     content_lower = payload.content.strip().lower()
     difficulty = _normalize_difficulty_level(payload.difficulty_level)
-    session_subject = _normalize_session_subject(payload.session_subject)
     prompt_for_api = _build_prompt_for_api(
         payload.content,
         payload.api_prompt,
         difficulty,
-        session_subject,
     )
     response_level = difficulty if difficulty != "Neutral" else None
+    structured_request_kind = _resolve_structured_request_kind(payload.content, payload.api_prompt)
+
+    # Quick quiz uses normal chat generation path, so validate topic before any generation.
+    if _is_quick_quiz_mode_request(payload.api_prompt):
+        if not is_valid_structured_topic_candidate(payload.content, payload.api_prompt or payload.content):
+            refusal_text = structured_refusal_message("quiz")
+            assistant_message = Message.create(
+                chat_id=chat_id,
+                user_id=user_id,
+                role="assistant",
+                content=refusal_text,
+            )
+            assistant_document = assistant_message.to_document()
+            assistant_document["message_index"] = assistant_index
+            assistant_document["ai_generated"] = False
+            assistant_document["was_stopped"] = False
+            if response_level:
+                assistant_document["response_level"] = response_level
+
+            result = await db["messages"].insert_one(assistant_document)
+            response = {
+                "type": "text",
+                "content": refusal_text,
+                "chat_id": str(chat_id),
+                "user_id": str(user_id),
+                "message_id": str(result.inserted_id),
+                "message_index": assistant_index,
+                "pending": False,
+                "response_level": response_level,
+            }
+            return _enrich_chat_response(response, chat_subject, new_title)
 
     personal_guard_response = _get_personal_guard_response(payload.content)
     if personal_guard_response is not None:
+        guard_response = personal_guard_response
+        if structured_request_kind:
+            guard_response = structured_refusal_message(structured_request_kind)
+
         assistant_message = Message.create(
             chat_id=chat_id,
             user_id=user_id,
             role="assistant",
-            content=personal_guard_response,
+            content=guard_response,
         )
         assistant_document = assistant_message.to_document()
         assistant_document["message_index"] = assistant_index
@@ -717,7 +844,7 @@ async def send_message(
         result = await db["messages"].insert_one(assistant_document)
         response = {
             "type": "text",
-            "content": personal_guard_response,
+            "content": guard_response,
             "chat_id": str(chat_id),
             "user_id": str(user_id),
             "message_id": str(result.inserted_id),
@@ -725,12 +852,10 @@ async def send_message(
             "pending": False,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
-    if _should_block_for_subject(payload.content, session_subject):
-        reply = _build_subject_mismatch_response(session_subject)
+    if _should_block_for_subject(payload.content, chat_subject):
+        reply = _build_subject_mismatch_response(chat_subject)
 
         assistant_message = Message.create(
             chat_id=chat_id,
@@ -756,9 +881,7 @@ async def send_message(
             "pending": False,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     is_mindmap = _is_mindmap_request(payload.content)
     is_flashcard = _is_flashcard_request(payload.content)
@@ -790,22 +913,20 @@ async def send_message(
             "pending": False,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     if is_mindmap:
         mindmap_data = await generate_mindmap_payload(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         if str(mindmap_data.get("type", "")).strip().lower() != "mindmap":
             refusal_text = str(mindmap_data.get("content", "")).strip()
             if not refusal_text:
-                refusal_text = "I can only create mind maps for study or education-related topics."
+                refusal_text = structured_refusal_message("mindmap")
 
             assistant_message = Message.create(
                 chat_id=chat_id,
@@ -831,9 +952,7 @@ async def send_message(
                 "pending": False,
                 "response_level": response_level,
             }
-            if new_title:
-                response["new_title"] = new_title
-            return response
+            return _enrich_chat_response(response, chat_subject, new_title)
 
         node_count = len(mindmap_data.get("nodes", []))
         mindmap_summary = (
@@ -861,22 +980,20 @@ async def send_message(
             "mindmap": mindmap_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     if is_flashcard:
         flashcard_data = await generate_flashcard_payload(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         if str(flashcard_data.get("type", "")).strip().lower() != "flashcard":
             refusal_text = str(flashcard_data.get("content", "")).strip()
             if not refusal_text:
-                refusal_text = "I can only create flashcards for study or education-related topics."
+                refusal_text = structured_refusal_message("flashcard")
 
             assistant_message = Message.create(
                 chat_id=chat_id,
@@ -902,9 +1019,7 @@ async def send_message(
                 "pending": False,
                 "response_level": response_level,
             }
-            if new_title:
-                response["new_title"] = new_title
-            return response
+            return _enrich_chat_response(response, chat_subject, new_title)
 
         card_count = len(flashcard_data.get("cards", []))
         flashcard_summary = (
@@ -932,9 +1047,7 @@ async def send_message(
             "flashcard": flashcard_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     if is_quiz:
         # Generate structured quiz JSON
@@ -942,13 +1055,13 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         if str(quiz_data.get("type", "")).strip().lower() != "quiz":
             refusal_text = str(quiz_data.get("content", "")).strip()
             if not refusal_text:
-                refusal_text = "I can only create quizzes for study or education-related topics."
+                refusal_text = structured_refusal_message("quiz")
 
             assistant_message = Message.create(
                 chat_id=chat_id,
@@ -974,9 +1087,7 @@ async def send_message(
                 "pending": False,
                 "response_level": response_level,
             }
-            if new_title:
-                response["new_title"] = new_title
-            return response
+            return _enrich_chat_response(response, chat_subject, new_title)
 
         # Save a text summary to DB so history makes sense
         question_count = len(quiz_data.get("questions", []))
@@ -1005,9 +1116,7 @@ async def send_message(
             "quiz": quiz_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     elif is_summary:
         # Generate structured summary JSON
@@ -1015,7 +1124,7 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         # Save a text summary to DB
@@ -1046,9 +1155,7 @@ async def send_message(
             "summary": summary_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     # --- Normal chat flow (with difficulty setting) ---
     reply = process_logic(payload.content)
@@ -1058,11 +1165,11 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
         used_ai = True
 
-    reply = _enforce_exact_subject_mismatch_reply(reply, session_subject)
+    reply = _enforce_exact_subject_mismatch_reply(reply, chat_subject)
 
     # --- DATA LOSS FIX: ALWAYS save full response IMMEDIATELY ---
     assistant_message = Message.create(
@@ -1093,10 +1200,7 @@ async def send_message(
         "response_level": response_level,
     }
     
-    if new_title:
-        response["new_title"] = new_title
-    
-    return response
+    return _enrich_chat_response(response, chat_subject, new_title)
 
 
 # --- Schema for applying STOP marker to already-saved response ---
@@ -1223,7 +1327,7 @@ async def submit_quiz_answer(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
     difficulty = _normalize_difficulty_level(payload.difficulty_level)
-    session_subject = _normalize_session_subject(payload.session_subject)
+    session_subject = _resolve_chat_subject(chat_document)
     response_level = difficulty if difficulty != "Neutral" else None
 
     # Generate AI feedback for the selected answer

@@ -9,6 +9,7 @@ interface CollaborativeCanvasProps {
   roomId: string;
   username?: string;
   roomName?: string;
+  boardId?: string;
 }
 
 function pickColor(seed: string): string {
@@ -32,18 +33,21 @@ function pickColor(seed: string): string {
   return palette[Math.abs(hash) % palette.length];
 }
 
-export default function CollaborativeCanvas({ roomId, username = "", roomName = "" }: CollaborativeCanvasProps) {
+export default function CollaborativeCanvas({ roomId, username = "", roomName = "", boardId = "" }: CollaborativeCanvasProps) {
   const trimmedUsername = username.trim();
   const guestFallback = useMemo(
     () => `guest-${Math.random().toString(36).slice(2, 6)}`,
     []
   );
   const resolvedUsername = trimmedUsername || guestFallback;
-  const presenceColor = pickColor(resolvedUsername || roomId);
+  const normalizedRoomId = roomId.trim().toLowerCase();
+  const normalizedBoardId = boardId.trim().toLowerCase();
+  const collaborationRoomId = normalizedBoardId || `saivo-room-${normalizedRoomId}`;
+  const presenceColor = pickColor(resolvedUsername || collaborationRoomId);
 
   return (
     <RoomProvider
-      id={roomId}
+      id={collaborationRoomId}
       initialPresence={{
         cursor: null,
         username: resolvedUsername,
@@ -51,7 +55,7 @@ export default function CollaborativeCanvas({ roomId, username = "", roomName = 
       }}
     >
       <Cursors />
-      <Editor roomId={roomId} roomName={roomName} username={resolvedUsername} />
+      <Editor roomId={collaborationRoomId} roomName={roomName} username={resolvedUsername} />
     </RoomProvider>
   );
 }

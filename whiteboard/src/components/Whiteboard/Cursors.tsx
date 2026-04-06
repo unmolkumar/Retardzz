@@ -1,6 +1,72 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useOthers } from "../../liveblocks.config";
+
+type PresenceColorKey = "blue" | "green" | "orange" | "violet" | "red" | "cyan" | "yellow" | "teal";
+
+const PRESENCE_COLOR_KEYS: PresenceColorKey[] = [
+  "blue",
+  "green",
+  "orange",
+  "violet",
+  "red",
+  "cyan",
+  "yellow",
+  "teal",
+];
+
+function getInitials(value: string): string {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return "?";
+  }
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+function pickPresenceColor(seed: string): PresenceColorKey {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  return PRESENCE_COLOR_KEYS[Math.abs(hash) % PRESENCE_COLOR_KEYS.length];
+}
+
+function resolvePresenceColor(value: unknown, seed: string): PresenceColorKey {
+  if (typeof value === "string" && PRESENCE_COLOR_KEYS.includes(value as PresenceColorKey)) {
+    return value as PresenceColorKey;
+  }
+  return pickPresenceColor(seed);
+}
+
+interface CursorBubbleProps {
+  x: number;
+  y: number;
+  label: string;
+  colorKey: PresenceColorKey;
+  connectionId: number;
+}
+
+function CursorBubble({ x, y, label, colorKey, connectionId }: CursorBubbleProps) {
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!bubbleRef.current) {
+      return;
+    }
+    bubbleRef.current.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  }, [x, y]);
+
+  return (
+    <div ref={bubbleRef} className={`wb-cursor-bubble wb-presence-${colorKey}`} data-connection-id={connectionId}>
+      {label}
+    </div>
+  );
+}
 
 export default function Cursors() {
   const others = useOthers();
@@ -13,18 +79,19 @@ export default function Cursors() {
         }
 
         const { x, y } = presence.cursor;
+        const label = presence.username ? getInitials(presence.username) : String(connectionId % 100);
+        const seed = presence.username || String(connectionId);
+        const colorKey = resolvePresenceColor(presence.color, seed);
 
         return (
-          <div
+          <CursorBubble
             key={connectionId}
-            className="absolute top-0 left-0 pointer-events-none z-50 flex items-center justify-center bg-blue-500 rounded-full w-8 h-8 text-white text-xs font-bold border-2 border-white shadow-md shadow-blue-500/20"
-            style={{
-              transform: `translate(${x}px, ${y}px)`,
-              transition: "transform 0.1s linear"
-            }}
-          >
-            {connectionId % 100}
-          </div>
+            x={x}
+            y={y}
+            label={label}
+            colorKey={colorKey}
+            connectionId={connectionId}
+          />
         );
       })}
     </>

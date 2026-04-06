@@ -90,6 +90,19 @@ cd backend
 uvicorn main:app --reload --port 8000
 ```
 
+### One-Click Dev Startup (Windows)
+From repo root, run:
+
+```bat
+start-dev.cmd
+```
+
+This opens two terminals:
+- Backend API on `http://127.0.0.1:8000`
+- Whiteboard app on `http://127.0.0.1:3001`
+
+You can also run the VS Code task `Start SAIVO Full Stack` from `Terminal -> Run Task`.
+
 ### Access the App
 Open `frontend/index.html` in your browser or serve it with a local server.
 

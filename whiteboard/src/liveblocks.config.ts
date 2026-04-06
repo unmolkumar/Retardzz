@@ -3,6 +3,8 @@ import { createRoomContext } from "@liveblocks/react";
 
 export type Presence = {
   cursor: { x: number; y: number } | null;
+  username: string | null;
+  color: string | null;
 };
 
 // TODO: Replace "pk_placeholder_key_here" with your actual Liveblocks public API key

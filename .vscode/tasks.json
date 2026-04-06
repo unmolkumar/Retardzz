@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start SAIVO Backend",
+      "type": "shell",
+      "command": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe -m uvicorn main:app --reload --port 8000) else (python -m uvicorn main:app --reload --port 8000)",
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "shell": {
+          "executable": "cmd.exe",
+          "args": [
+            "/d",
+            "/c"
+          ]
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start SAIVO Whiteboard",
+      "type": "shell",
+      "command": "npm run dev:room",
+      "options": {
+        "cwd": "${workspaceFolder}/whiteboard",
+        "shell": {
+          "executable": "cmd.exe",
+          "args": [
+            "/d",
+            "/c"
+          ]
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start SAIVO Full Stack",
+      "dependsOn": [
+        "Start SAIVO Backend",
+        "Start SAIVO Whiteboard"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

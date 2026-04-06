@@ -5,6 +5,9 @@ const STUDY_STATS_POLL_MS = 10000;
 const PRESENCE_PING_MS = 12000;
 const MAX_ACTIVITY_NOTIFICATIONS = 20;
 const STUDY_TIMER_STORAGE_KEY = 'saivo_room_timer_state';
+const ROOM_NAV_STORAGE_KEY = 'saivo_room_nav_state';
+const WHITEBOARD_BASE_URL_STORAGE_KEY = 'saivo_whiteboard_base_url';
+const WHITEBOARD_DEFAULT_BASE_URL = 'http://127.0.0.1:3001';
 
 let currentUser = localStorage.getItem('username');
 let activeRoom = null;
@@ -120,11 +123,69 @@ const ui = {
     studyboardLiveClock: document.getElementById('studyboard-live-clock')
 };
 
-function showView(viewName) {
+function showView(viewName, options = {}) {
+    if (!views[viewName]) {
+        return;
+    }
+
     Object.values(views).forEach((view) => {
         view.classList.add('room-hidden');
     });
+
     views[viewName].classList.remove('room-hidden');
+
+    if (!options.skipPersist) {
+        writeRoomNavigationState(viewName);
+    }
+}
+
+function writeRoomNavigationState(viewName) {
+    try {
+        if (!views[viewName]) {
+            return;
+        }
+
+        const payload = {
+            username: currentUser || '',
+            roomId: activeRoom || null,
+            view: viewName,
+            savedAtMs: Date.now()
+        };
+
+        localStorage.setItem(ROOM_NAV_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+        // Ignore storage failures in restricted browser modes.
+    }
+}
+
+function readRoomNavigationState() {
+    try {
+        const raw = localStorage.getItem(ROOM_NAV_STORAGE_KEY);
+        if (!raw) {
+            return null;
+        }
+
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.username !== currentUser) {
+            return null;
+        }
+
+        if (!parsed.view || !views[parsed.view]) {
+            return null;
+        }
+
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function clearRoomNavigationState() {
+    try {
+        localStorage.removeItem(ROOM_NAV_STORAGE_KEY);
+    } catch {
+        // Ignore storage failures in restricted browser modes.
+    }
 }
 
 function getHeaders() {
@@ -301,6 +362,56 @@ function parseServerTimestamp(value) {
     // Backend may return naive timestamps; treat them as UTC to avoid false elapsed spikes.
     const candidate = hasTimezone ? normalized : `${normalized}Z`;
     return Date.parse(candidate);
+}
+
+function getWhiteboardBaseUrl() {
+    const override = localStorage.getItem(WHITEBOARD_BASE_URL_STORAGE_KEY);
+    if (override && override.trim()) {
+        return override.trim().replace(/\/$/, '');
+    }
+    return WHITEBOARD_DEFAULT_BASE_URL;
+}
+
+function getWhiteboardRoomUrl(roomId) {
+    const roomPath = `${getWhiteboardBaseUrl()}/room/${encodeURIComponent(roomId)}`;
+    const whiteboardUrl = new URL(roomPath);
+    const roomName = getRoomNameFromCache(roomId, 'Study Room');
+    const rawBoardSeed = (roomName || roomId || '').toString().trim().toLowerCase();
+    const normalizedBoardSeed = rawBoardSeed.replace(/\s+/g, '-');
+    const boardId = normalizedBoardSeed ? `saivo-room-${normalizedBoardSeed}` : 'saivo-room-default';
+
+    if (currentUser) {
+        whiteboardUrl.searchParams.set('username', currentUser);
+    }
+    if (roomName) {
+        whiteboardUrl.searchParams.set('roomName', roomName);
+    }
+    whiteboardUrl.searchParams.set('boardId', boardId);
+
+    return whiteboardUrl.toString();
+}
+
+function openWhiteboardForActiveRoom() {
+    if (!activeRoom) {
+        setStatus('study-status', 'Open a room first, then launch whiteboard.');
+        return;
+    }
+
+    const whiteboardUrl = getWhiteboardRoomUrl(activeRoom);
+    const newWindow = window.open(whiteboardUrl, '_blank');
+    if (!newWindow) {
+        window.location.href = whiteboardUrl;
+        return;
+    }
+
+    // Keep tab-open behavior secure while avoiding duplicate navigation.
+    try {
+        newWindow.opener = null;
+    } catch {
+        // Ignore cross-window hardening errors in restrictive browser modes.
+    }
+
+    setStatus('study-status', `Opened whiteboard for room ${activeRoom}.`);
 }
 
 function updateClockWidgets() {
@@ -704,8 +815,8 @@ function renderStudyMembers(members) {
 }
 
 async function syncStudySessionFromMembers() {
-    const liveMember = studyState.latestMembers.find((entry) => entry.is_live);
-    if (!liveMember) {
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    if (!selfStats || !selfStats.is_live) {
         const hadLiveSession = studyState.isLiveStudying;
         studyState.isLiveStudying = false;
         studyState.liveOwner = '';
@@ -722,36 +833,36 @@ async function syncStudySessionFromMembers() {
         }
 
         if (hadLiveSession) {
-            setStatus('study-status', 'Shared focus session is currently idle.');
+            setStatus('study-status', 'Your focus session is currently idle.');
         }
         return;
     }
 
-    const modeKey = STUDY_MODE_CONFIG[liveMember.active_mode_key] ? liveMember.active_mode_key : 'focus60';
-    const targetSeconds = Number(liveMember.active_target_seconds) > 0
-        ? Number(liveMember.active_target_seconds)
+    const modeKey = STUDY_MODE_CONFIG[selfStats.active_mode_key] ? selfStats.active_mode_key : 'focus60';
+    const targetSeconds = Number(selfStats.active_target_seconds) > 0
+        ? Number(selfStats.active_target_seconds)
         : STUDY_MODE_CONFIG[modeKey].minutes * 60;
 
-    const startedAtMs = parseServerTimestamp(liveMember.started_at || '');
+    const startedAtMs = parseServerTimestamp(selfStats.started_at || '');
     const elapsed = Number.isNaN(startedAtMs)
         ? 0
         : Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
     const remaining = Math.max(0, targetSeconds - elapsed);
 
-    const previousSignature = `${studyState.liveOwner}|${studyState.serverStartedAt || ''}`;
+    const previousSignature = `${studyState.serverStartedAt || ''}|${studyState.modeKey}`;
 
     studyState.modeKey = modeKey;
     studyState.durationSeconds = targetSeconds;
     studyState.remainingSeconds = remaining;
     studyState.isLiveStudying = true;
-    studyState.liveOwner = liveMember.username;
-    studyState.serverStartedAt = liveMember.started_at || null;
+    studyState.liveOwner = currentUser;
+    studyState.serverStartedAt = selfStats.started_at || null;
 
-    const currentSignature = `${studyState.liveOwner}|${studyState.serverStartedAt || ''}`;
+    const currentSignature = `${studyState.serverStartedAt || ''}|${studyState.modeKey}`;
 
     if (remaining <= 0) {
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Shared focus session completed.');
+        await stopLiveStudySession('Your focus session completed.');
         await loadStudyStats(false);
         return;
     }
@@ -761,11 +872,7 @@ async function syncStudySessionFromMembers() {
     }
 
     if (previousSignature !== currentSignature) {
-        if (studyState.liveOwner === currentUser) {
-            setStatus('study-status', 'You started a shared focus session.');
-        } else {
-            setStatus('study-status', `${studyState.liveOwner} started a shared focus session.`);
-        }
+        setStatus('study-status', 'Your focus session is active.');
     }
 
     renderStudyTimerUI();
@@ -824,7 +931,7 @@ async function startLiveStudySession() {
     studyState.liveOwner = currentUser;
     studyState.serverStartedAt = new Date().toISOString();
     studyState.remainingSeconds = studyState.durationSeconds;
-    setStatus('study-status', `${mode.label} started for everyone in this room.`);
+    setStatus('study-status', `${mode.label} started.`);
     return true;
 }
 
@@ -833,7 +940,8 @@ async function stopLiveStudySession(messageOverride = '') {
         return true;
     }
 
-    const hasLiveSession = studyState.isLiveStudying || studyState.latestMembers.some((entry) => entry.is_live);
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    const hasLiveSession = studyState.isLiveStudying || Boolean(selfStats && selfStats.is_live);
     if (!hasLiveSession) {
         return true;
     }
@@ -868,10 +976,36 @@ async function setStudyMode(modeKey) {
         return;
     }
 
-    if (studyState.running) {
+    if (modeKey === studyState.modeKey) {
+        return;
+    }
+
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    const hasLiveTimer = studyState.running || studyState.isLiveStudying || Boolean(selfStats && selfStats.is_live);
+
+    if (hasLiveTimer) {
+        const currentMode = getActiveStudyModeConfig();
+        const nextMode = STUDY_MODE_CONFIG[modeKey];
+        const confirmStop = window.confirm(
+            `You are currently running ${currentMode.label}. Stop this timer and switch to ${nextMode.label}?`
+        );
+
+        if (!confirmStop) {
+            return;
+        }
+
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Shared focus session paused for mode switch.');
+        await stopLiveStudySession('Timer stopped. Select your next session and press Start.');
         await loadStudyStats(false);
+
+        studyState.modeKey = modeKey;
+        studyState.durationSeconds = STUDY_MODE_CONFIG[modeKey].minutes * 60;
+        studyState.remainingSeconds = 0;
+        studyState.isLiveStudying = false;
+        studyState.liveOwner = '';
+        studyState.serverStartedAt = null;
+        renderStudyTimerUI();
+        return;
     }
 
     studyState.modeKey = modeKey;
@@ -897,8 +1031,8 @@ function runStudyCountdownTick() {
     stopLocalStudyCountdown();
 
     const mode = getActiveStudyModeConfig();
-    stopLiveStudySession('Shared focus session completed. Great work.').then(() => {
-        pushActivityNotification('Shared session complete', `${mode.label} ended successfully.`, 'success');
+    stopLiveStudySession('Focus session completed. Great work.').then(() => {
+        pushActivityNotification('Session complete', `${mode.label} ended successfully.`, 'success');
         loadStudyStats(false);
         renderStudyTimerUI();
     });
@@ -912,7 +1046,7 @@ async function handleStudyToggle() {
 
     if (studyState.running) {
         stopLocalStudyCountdown();
-        await stopLiveStudySession('Shared focus session paused.');
+        await stopLiveStudySession('Your focus session paused.');
         await loadStudyStats(false);
         renderStudyTimerUI();
         return;
@@ -936,7 +1070,7 @@ async function handleStudyReset() {
         stopLocalStudyCountdown();
     }
 
-    await stopLiveStudySession('Shared focus session reset.');
+    await stopLiveStudySession('Your focus session reset.');
     await loadStudyStats(false);
 
     studyState.remainingSeconds = studyState.durationSeconds;
@@ -1631,6 +1765,37 @@ async function selectRoom(room) {
     }, STUDY_STATS_POLL_MS);
 }
 
+async function restoreNavigationAfterBootstrap() {
+    const state = readRoomNavigationState();
+    if (!state) {
+        return false;
+    }
+
+    const targetView = state.view;
+    if (!state.roomId) {
+        if (targetView === 'chat' || targetView === 'invite') {
+            showView('hub', { skipPersist: true });
+            return true;
+        }
+
+        showView(targetView, { skipPersist: true });
+        return true;
+    }
+
+    const room = roomCache.find((candidate) => candidate.id === state.roomId);
+    if (!room) {
+        clearRoomNavigationState();
+        return false;
+    }
+
+    await selectRoom(room);
+    if (targetView === 'invite') {
+        await openManageView();
+    }
+
+    return true;
+}
+
 async function openManageView() {
     if (!activeRoom) {
         return;
@@ -1922,7 +2087,7 @@ if (ui.micBtn) {
 
 if (ui.whiteboardBtn) {
     ui.whiteboardBtn.addEventListener('click', () => {
-        setStatus('study-status', 'Whiteboard button is ready. Integration will be plugged in here.');
+        openWhiteboardForActiveRoom();
     });
 }
 
@@ -2155,8 +2320,13 @@ window.onload = async () => {
     closeNotifications();
     renderStudyTimerUI();
     renderStudyMembers([]);
-    showView('hub');
+
     await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
+
+    const restored = await restoreNavigationAfterBootstrap();
+    if (!restored) {
+        showView('hub', { skipPersist: true });
+    }
 
     if (notificationInterval) {
         clearInterval(notificationInterval);

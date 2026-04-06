@@ -5,21 +5,15 @@ import Canvas from "../../../components/whiteboard/Canvas";
 export default function RoomPage({ params }: { params: { id: string } }) {
   return (
     <div className="flex h-screen p-4 gap-4 bg-gray-100">
-      {/* Sidebar: AI Tutor */}
       <div className="w-1/4 h-full flex flex-col gap-4">
         <AITutor roomId={params.id} userId="temp-user" />
       </div>
-      
-      {/* Center: Whiteboard & Polls */}
       <div className="w-1/2 h-full flex flex-col gap-4">
         <div className="h-2/3"><Canvas roomId={params.id} userId="temp-user" /></div>
         <div className="h-1/3"><PollManager roomId={params.id} userId="temp-user" /></div>
       </div>
-      
-      {/* Right Sidebar: Room Core / Voice controls */}
       <div className="w-1/4 h-full border-2 border-red-500 rounded p-4 bg-white">
-        <h2>Room & Voice (Member 3)</h2>
-        <p>Room ID: {params.id}</p>
+        <h2>Room & Voice (Member 3)</h2><p>Room ID: {params.id}</p>
       </div>
     </div>
   );

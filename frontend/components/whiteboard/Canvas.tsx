@@ -1,3 +1,1 @@
-export default function Canvas({ roomId, userId }: {roomId:string, userId:string}) { 
-  return <div className="p-4 border-2 border-purple-500 rounded bg-white h-full">Whiteboard Canvas (Member 4)</div>; 
-}
+export default function Canvas({ roomId, userId }: {roomId:string, userId:string}) { return <div className="p-4 border-2 border-purple-500 rounded bg-white h-full">Whiteboard Canvas (Member 4)</div>; }

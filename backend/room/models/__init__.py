@@ -4,5 +4,6 @@ from .room_member import RoomMember, MemberRole
 from .room_message import RoomMessage
 from .room_invitation import RoomInvitation
 from .room_join_request import RoomJoinRequest
+from .room_study_stat import RoomStudyStat
 
-__all__ = ["Room", "RoomMember", "MemberRole", "RoomMessage", "RoomInvitation", "RoomJoinRequest"]
+__all__ = ["Room", "RoomMember", "MemberRole", "RoomMessage", "RoomInvitation", "RoomJoinRequest", "RoomStudyStat"]

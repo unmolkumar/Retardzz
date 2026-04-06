@@ -2,6 +2,13 @@
 from typing import Optional
 
 
+IDENTITY_INTRO_RESPONSE = (
+	"Hello there. My name is Saivo, and I'm a friendly AI tutor created by Kush Dalal, "
+	"a student at Chandigarh University. I'm here to help you learn new things and "
+	"understand the concepts you're struggling with. How can I assist you today?"
+)
+
+
 # ========================
 # CRITICAL: HARD-CODED IDENTITY OVERRIDE
 # ========================
@@ -34,7 +41,17 @@ def _detect_identity_intent(message: str) -> Optional[str]:
 	# Remove common question words and punctuation for better matching
 	normalized = normalized.replace("?", "").replace(".", "").replace(",", "")
 	
-	# 1. NAME DETECTION
+	# 1. INTRO/IDENTITY DETECTION
+	# Patterns: "who are you", "who are u", "who r u"
+	if any(pattern in normalized for pattern in [
+		"who are you",
+		"who are u",
+		"who r you",
+		"who r u",
+	]):
+		return IDENTITY_INTRO_RESPONSE
+
+	# 2. NAME DETECTION
 	# Patterns: "what is your name", "what's your name", "your name", "name?"
 	if any(pattern in normalized for pattern in [
 		"what is your name",
@@ -44,9 +61,9 @@ def _detect_identity_intent(message: str) -> Optional[str]:
 		"what are you called",
 		"what do they call you",
 	]) or normalized in {"your name", "name"}:
-		return "My name is ChatTutor."
+		return "My name is Saivo."
 	
-	# 2. PRONOUNS DETECTION (must be before "what are you" check)
+	# 3. PRONOUNS DETECTION (must be before "what are you" check)
 	# Patterns: "what are your pronouns", "he or she", "gender"
 	if any(pattern in normalized for pattern in [
 		"your pronouns",
@@ -60,7 +77,7 @@ def _detect_identity_intent(message: str) -> Optional[str]:
 	]):
 		return "You can refer to me as he/him."
 	
-	# 3. NATURE/TYPE DETECTION
+	# 4. NATURE/TYPE DETECTION
 	# Patterns: "what are you", "what kind of ai", "are you a bot"
 	if any(pattern in normalized for pattern in [
 		"what are you",
@@ -73,7 +90,7 @@ def _detect_identity_intent(message: str) -> Optional[str]:
 	]):
 		return "I'm a Large Language Model designed to assist with information and communication."
 	
-	# 4. ORIGIN/CREATOR DETECTION
+	# 5. ORIGIN/CREATOR DETECTION
 	# Patterns: "who made you", "who created you", "who built you", "what is your origin"
 	if any(pattern in normalized for pattern in [
 		"who made you",
@@ -122,10 +139,5 @@ def process_logic(message: str) -> Optional[str]:
 
 	if "help" in normalized:
 		return "Sure, I'm here to help. Let me know what you need assistance with."
-
-	# Generic "who are you" that doesn't match specific identity patterns
-	# is covered by _detect_identity_intent, so this can be removed or serve as fallback
-	if "who are you" in normalized:
-		return "I'm your friendly chatbot assistant."
 
 	return None

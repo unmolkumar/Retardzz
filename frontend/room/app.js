@@ -5,6 +5,7 @@ const STUDY_STATS_POLL_MS = 10000;
 const PRESENCE_PING_MS = 12000;
 const MAX_ACTIVITY_NOTIFICATIONS = 20;
 const STUDY_TIMER_STORAGE_KEY = 'saivo_room_timer_state';
+const ROOM_NAV_STORAGE_KEY = 'saivo_room_nav_state';
 
 let currentUser = localStorage.getItem('username');
 let activeRoom = null;
@@ -120,11 +121,69 @@ const ui = {
     studyboardLiveClock: document.getElementById('studyboard-live-clock')
 };
 
-function showView(viewName) {
+function showView(viewName, options = {}) {
+    if (!views[viewName]) {
+        return;
+    }
+
     Object.values(views).forEach((view) => {
         view.classList.add('room-hidden');
     });
+
     views[viewName].classList.remove('room-hidden');
+
+    if (!options.skipPersist) {
+        writeRoomNavigationState(viewName);
+    }
+}
+
+function writeRoomNavigationState(viewName) {
+    try {
+        if (!views[viewName]) {
+            return;
+        }
+
+        const payload = {
+            username: currentUser || '',
+            roomId: activeRoom || null,
+            view: viewName,
+            savedAtMs: Date.now()
+        };
+
+        localStorage.setItem(ROOM_NAV_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+        // Ignore storage failures in restricted browser modes.
+    }
+}
+
+function readRoomNavigationState() {
+    try {
+        const raw = localStorage.getItem(ROOM_NAV_STORAGE_KEY);
+        if (!raw) {
+            return null;
+        }
+
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.username !== currentUser) {
+            return null;
+        }
+
+        if (!parsed.view || !views[parsed.view]) {
+            return null;
+        }
+
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function clearRoomNavigationState() {
+    try {
+        localStorage.removeItem(ROOM_NAV_STORAGE_KEY);
+    } catch {
+        // Ignore storage failures in restricted browser modes.
+    }
 }
 
 function getHeaders() {
@@ -1654,6 +1713,37 @@ async function selectRoom(room) {
     }, STUDY_STATS_POLL_MS);
 }
 
+async function restoreNavigationAfterBootstrap() {
+    const state = readRoomNavigationState();
+    if (!state) {
+        return false;
+    }
+
+    const targetView = state.view;
+    if (!state.roomId) {
+        if (targetView === 'chat' || targetView === 'invite') {
+            showView('hub', { skipPersist: true });
+            return true;
+        }
+
+        showView(targetView, { skipPersist: true });
+        return true;
+    }
+
+    const room = roomCache.find((candidate) => candidate.id === state.roomId);
+    if (!room) {
+        clearRoomNavigationState();
+        return false;
+    }
+
+    await selectRoom(room);
+    if (targetView === 'invite') {
+        await openManageView();
+    }
+
+    return true;
+}
+
 async function openManageView() {
     if (!activeRoom) {
         return;
@@ -2178,8 +2268,13 @@ window.onload = async () => {
     closeNotifications();
     renderStudyTimerUI();
     renderStudyMembers([]);
-    showView('hub');
+
     await Promise.all([fetchMyRooms(), refreshNotifications(false), refreshHubQuote(false)]);
+
+    const restored = await restoreNavigationAfterBootstrap();
+    if (!restored) {
+        showView('hub', { skipPersist: true });
+    }
 
     if (notificationInterval) {
         clearInterval(notificationInterval);

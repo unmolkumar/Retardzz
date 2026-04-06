@@ -555,6 +555,67 @@ function parseMarkdown(text) {
 	return tokens;
 }
 
+function parseMarkdownToHtml(markdownText) {
+	const sourceText = typeof markdownText === "string" ? markdownText : "";
+	if (!sourceText.trim()) {
+		return "";
+	}
+
+	try {
+		if (typeof marked === "undefined") {
+			return "";
+		}
+
+		if (typeof marked.parse === "function") {
+			return marked.parse(sourceText);
+		}
+
+		if (typeof marked === "function") {
+			return marked(sourceText);
+		}
+	} catch (error) {
+		console.error("Markdown parsing failed:", error);
+	}
+
+	return "";
+}
+
+function renderMathInMessageBubble(targetElement) {
+	if (!targetElement || typeof renderMathInElement !== "function") {
+		return;
+	}
+
+	try {
+		renderMathInElement(targetElement, {
+			delimiters: [
+				{ left: "\\(", right: "\\)", display: false },
+				{ left: "\\[", right: "\\]", display: true },
+				{ left: "$$", right: "$$", display: true },
+			],
+			throwOnError: false,
+			strict: "ignore",
+			ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
+		});
+	} catch (error) {
+		console.error("KaTeX rendering failed:", error);
+	}
+}
+
+function renderAssistantRichContent(targetElement, rawText) {
+	if (!targetElement) {
+		return;
+	}
+
+	const markdownHtml = parseMarkdownToHtml(rawText);
+	if (!markdownHtml) {
+		targetElement.textContent = typeof rawText === "string" ? rawText : "";
+		return;
+	}
+
+	targetElement.innerHTML = markdownHtml;
+	renderMathInMessageBubble(targetElement);
+}
+
 // --- WELCOME SCREEN ---
 // Show welcome screen when no active chat or no messages
 function showWelcomeScreen() {
@@ -946,75 +1007,22 @@ function createMessageElement(message, animate = false) {
 		}
 	}
 
-	// Add copy button for USER messages only
-	if (!isAssistant) {
+	if (isAssistant) {
+		const richContent = document.createElement("div");
+		richContent.classList.add("assistant-rich-content");
+		renderAssistantRichContent(richContent, trimmed);
+		if (animate) {
+			richContent.classList.add("ai-text-reveal");
+		}
+		content.appendChild(richContent);
+	} else {
+		const userText = document.createElement("span");
+		userText.classList.add("user-message-text");
+		userText.textContent = trimmed;
+		content.appendChild(userText);
+
 		const copyBtn = createUserMessageCopyButton(trimmed);
 		content.appendChild(copyBtn);
-	}
-
-	if (isAssistant && animate) {
-		// Use typewriter animation for AI messages
-		wrapper.appendChild(content);
-		addTypewriterAnimation(content, trimmed);
-		return wrapper;
-	} else {
-		// Instant display for user messages or non-animated AI messages
-		const tokens = parseMarkdown(trimmed);
-		let currentListItem = null;  // Track if we're inside a list item
-		
-		tokens.forEach(token => {
-			if (token.type === 'code') {
-				// Close any open list item first
-				if (currentListItem) {
-					content.appendChild(currentListItem);
-					currentListItem = null;
-				}
-				content.appendChild(createCodeBlock(token.language, token.code));
-			} else if (token.type === 'list-marker') {
-				// Close previous list item if any
-				if (currentListItem) {
-					content.appendChild(currentListItem);
-				}
-				// Start a new list item
-				currentListItem = document.createElement('li');
-			} else if (token.type === 'bold') {
-				const strong = document.createElement('strong');
-				strong.textContent = token.text;
-				if (currentListItem) {
-					currentListItem.appendChild(strong);
-				} else {
-					content.appendChild(strong);
-				}
-			} else if (token.type === 'inline-code') {
-				const code = document.createElement('code');
-				code.textContent = token.code;
-				if (currentListItem) {
-					currentListItem.appendChild(code);
-				} else {
-					content.appendChild(code);
-				}
-			} else if (token.type === 'break') {
-				// Close list item on line break
-				if (currentListItem) {
-					content.appendChild(currentListItem);
-					currentListItem = null;
-				} else {
-					content.appendChild(document.createElement('br'));
-				}
-			} else if (token.type === 'text') {
-				const textNode = document.createTextNode(token.text);
-				if (currentListItem) {
-					currentListItem.appendChild(textNode);
-				} else {
-					content.appendChild(textNode);
-				}
-			}
-		});
-		
-		// Close any remaining list item
-		if (currentListItem) {
-			content.appendChild(currentListItem);
-		}
 	}
 
 	wrapper.appendChild(content);
@@ -1849,13 +1857,16 @@ async function sendMessage(content) {
 					renderState.chatId = response.chat_id || state.activeChatId;
 					renderState.userId = response.user_id || state.userId;
 					renderState.messageId = response.message_id;
+					isGenerating = false;
+					generatingChatId = null;
+					hideStopButton();
 
 					const aiMessage = {
 						role: "assistant",
 						content: response.content,
 						response_level: responseLevel,
 					};
-					appendMessage(aiMessage, true);
+					appendMessage(aiMessage, false);
 
 					const isAtBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 100;
 					if (isAtBottom) {

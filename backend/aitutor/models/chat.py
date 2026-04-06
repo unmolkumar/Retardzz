@@ -19,16 +19,18 @@ class Chat:
     user_id: ObjectId
     title: str
     created_at: datetime
+    subject: str = "Anyone"
     deleted_at: Optional[datetime] = None  # Soft delete: null = active, datetime = deleted
     _id: Optional[ObjectId] = None
 
     @classmethod
-    def create(cls, user_id: ObjectId, title: str) -> "Chat":
+    def create(cls, user_id: ObjectId, title: str, subject: str = "Anyone") -> "Chat":
         """Factory helper that stamps the current UTC time."""
         return cls(
             user_id=user_id,
             title=title,
             created_at=datetime.now(timezone.utc),
+            subject=subject,
             deleted_at=None,  # New chats are always active
         )
 

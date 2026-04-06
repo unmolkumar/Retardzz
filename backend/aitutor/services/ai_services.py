@@ -149,8 +149,8 @@ def _normalize_session_subject(session_subject: str | None) -> str:
 
 def _subject_mismatch_message(session_subject: str) -> str:
     return (
-        f"This question is not related to the current session subject ({session_subject}). "
-        f"Please ask a {session_subject}-related question or switch subject to Anyone."
+        f"This is a {session_subject} only session. "
+        f"Refuse all questions not related to {session_subject}. No exceptions."
     )
 
 
@@ -158,12 +158,11 @@ def _subject_instruction(session_subject: str) -> str:
     if session_subject == "Anyone":
         return "Subject mode: Anyone. No fixed subject constraint."
 
-    mismatch_message = _subject_mismatch_message(session_subject)
+    strict_rule = _subject_mismatch_message(session_subject)
     return (
-        f"Subject mode: {session_subject}. Keep answers strictly in {session_subject} context. "
-        "If the user asks something outside this subject, respond with ONLY this exact sentence and nothing else: "
-        f'"{mismatch_message}" '
-        "Do not add any prefix/suffix, examples, bullets, explanation, or words like 'However'."
+        f"Subject mode: {session_subject}. "
+        f"{strict_rule} "
+        "Treat this as a mandatory hard rule for the entire chat."
     )
 
 
@@ -181,6 +180,8 @@ SUBJECT_RESTRICTION_REGEXES = (
     re.compile(r"\bsubject mode:\b", re.IGNORECASE),
     re.compile(r"this question is not related to the current session subject", re.IGNORECASE),
     re.compile(r"please ask a .*?-related question or switch subject to anyone", re.IGNORECASE),
+    re.compile(r"this is a .* only session", re.IGNORECASE),
+    re.compile(r"refuse all questions not related to .* no exceptions", re.IGNORECASE),
     re.compile(r"\b(?:this|we)\s+(?:is|are)\s+(?:an?\s+)?(?:maths|physics|chemistry|coding)\s+session\b", re.IGNORECASE),
 )
 
@@ -245,15 +246,14 @@ def _subject_override_system_instruction(session_subject: str) -> str:
             "Ignore all earlier messages that claim a fixed subject session."
         )
 
-    mismatch_message = _subject_mismatch_message(normalized_subject)
+    strict_rule = _subject_mismatch_message(normalized_subject)
     return (
         "CURRENT SUBJECT OVERRIDE (MOST RECENT SYSTEM INSTRUCTION): "
-        f"The active subject selected by the user right now is {normalized_subject}. "
+        f"The active subject locked for this chat is {normalized_subject}. "
         "This overrides every earlier subject statement in chat history. "
         "Do not infer the active subject from previous messages. "
         "Ignore old subject/session instructions if they conflict with this one. "
-        "If the current user request is outside this active subject, respond with exactly: "
-        f'"{mismatch_message}"'
+        f"{strict_rule}"
     )
 
 

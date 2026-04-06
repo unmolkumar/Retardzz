@@ -38,7 +38,8 @@ class SendMessageRequest(BaseModel):
 	
 	# Educational mode settings
 	difficulty_level: Optional[str] = Field(default="Neutral")
-	session_subject: Optional[str] = Field(default="Anyone")
+	selected_subject: Optional[str] = Field(default=None)
+	session_subject: Optional[str] = Field(default="Anyone")  # Backward compatibility
 	
 	# Optional fields for stop handling (Phase 2)
 	# stopped: indicates if user stopped rendering mid-way

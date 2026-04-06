@@ -15,6 +15,31 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 DEFAULT_CHAT_TITLE = "New Chat"
 
 
+def _normalize_chat_subject(raw_subject: Optional[str]) -> str:
+	"""Normalize persisted chat subject values to the supported list."""
+	if not raw_subject or not isinstance(raw_subject, str):
+		return "Anyone"
+
+	normalized = raw_subject.strip().lower()
+	if normalized == "maths":
+		return "Maths"
+	if normalized == "physics":
+		return "Physics"
+	if normalized == "chemistry":
+		return "Chemistry"
+	if normalized == "coding":
+		return "Coding"
+	if normalized == "anyone":
+		return "Anyone"
+	return "Anyone"
+
+
+async def _chat_has_messages(db: AsyncIOMotorDatabase, chat_id: ObjectId) -> bool:
+	"""Return True if a chat has at least one message."""
+	message = await db["messages"].find_one({"chat_id": chat_id}, {"_id": 1})
+	return message is not None
+
+
 def _resolve_title(raw_title: Optional[str]) -> str:
     """Return a sanitized title or the default when none is provided."""
     if not raw_title:
@@ -52,6 +77,8 @@ async def create_chat(
 		id=str(result.inserted_id),
 		title=document["title"],
 		created_at=document["created_at"],
+		subject=document.get("subject", "Anyone"),
+		has_messages=False,
 	)
 
 
@@ -85,11 +112,15 @@ async def list_chats(
 
 	chats: list[ChatResponse] = []
 	async for document in cursor:
+		subject = _normalize_chat_subject(document.get("subject"))
+		has_messages = await _chat_has_messages(db, document["_id"])
 		chats.append(
 			ChatResponse(
 				id=str(document["_id"]),
 				title=document.get("title", DEFAULT_CHAT_TITLE),
 				created_at=document["created_at"],
+				subject=subject,
+				has_messages=has_messages,
 			)
 		)
 

@@ -34,11 +34,13 @@ const state = {
 	username: localStorage.getItem("username"),
 	activeChatId: localStorage.getItem("activeChatId"),
 	difficultyLevel: localStorage.getItem("difficultyLevel") || "Neutral",
-	sessionSubject: localStorage.getItem("sessionSubject") || "Anyone",
+	draftSubject: localStorage.getItem("draftSubject") || "Anyone",
+	chatMetaById: {},
 };
 
 // Cleanup legacy preference from removed guided-learning mode.
 localStorage.removeItem("guidedLearning");
+localStorage.removeItem("sessionSubject");
 
 // DOM elements
 const sidebar = document.getElementById("sidebar");
@@ -64,6 +66,8 @@ const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
 const uploadBtn = document.getElementById("upload-btn");
 const subjectSelect = document.getElementById("subject-select");
+const subjectSelectorRow = document.getElementById("subject-selector-row");
+const subjectLockBadge = document.getElementById("subject-lock-badge");
 const difficultyPicker = document.getElementById("difficulty-picker");
 const difficultyPickerBtn = document.getElementById("difficulty-picker-btn");
 const difficultyPickerLabel = document.getElementById("difficulty-picker-label");
@@ -285,21 +289,20 @@ document.addEventListener("click", (e) => {
 // This prevents Stop button from affecting a different chat
 let generatingChatId = null;  // The chat_id currently generating a response
 let isGenerating = false;     // Whether AI response generation is in progress
-const SUBJECT_SWITCH_COOLDOWN_MS = 5000;
-let subjectSwitchCooldownUntil = 0;
 
 function syncSelectionControlsLock() {
-	const lockControls = isGenerating;
+	const lockSubjectControl = isGenerating || isActiveChatSubjectLocked();
+	const lockDifficultyControl = isGenerating;
 
 	if (subjectSelect) {
-		subjectSelect.disabled = lockControls;
+		subjectSelect.disabled = lockSubjectControl;
 	}
 
 	if (difficultyPickerBtn) {
-		difficultyPickerBtn.disabled = lockControls;
+		difficultyPickerBtn.disabled = lockDifficultyControl;
 	}
 
-	if (lockControls) {
+	if (lockDifficultyControl) {
 		closeDifficultyPopup();
 	}
 }
@@ -1485,6 +1488,99 @@ function clearSession() {
 	localStorage.removeItem("userId");
 	localStorage.removeItem("username");
 	localStorage.removeItem("activeChatId");
+	localStorage.removeItem("draftSubject");
+	localStorage.removeItem("sessionSubject");
+}
+
+function getChatMeta(chatId) {
+	if (!chatId) {
+		return { subject: "Anyone", hasMessages: false };
+	}
+
+	const meta = state.chatMetaById[chatId];
+	if (!meta) {
+		return { subject: "Anyone", hasMessages: false };
+	}
+
+	return {
+		subject: normalizeSessionSubject(meta.subject),
+		hasMessages: Boolean(meta.hasMessages),
+	};
+}
+
+function setChatMeta(chatId, subject, hasMessages) {
+	if (!chatId) {
+		return;
+	}
+
+	state.chatMetaById[chatId] = {
+		subject: normalizeSessionSubject(subject),
+		hasMessages: Boolean(hasMessages),
+	};
+}
+
+function isActiveChatSubjectLocked() {
+	if (!state.activeChatId) {
+		return false;
+	}
+	return getChatMeta(state.activeChatId).hasMessages;
+}
+
+function getSubjectInitial(subject) {
+	const normalized = normalizeSessionSubject(subject);
+	if (normalized === "Anyone") {
+		return "";
+	}
+	return normalized.charAt(0).toUpperCase();
+}
+
+function updateActiveChatSubjectUi() {
+	const activeMeta = getChatMeta(state.activeChatId);
+	const isLocked = state.activeChatId ? activeMeta.hasMessages : false;
+	const unlockedSubject = state.activeChatId
+		? activeMeta.subject
+		: normalizeSessionSubject(state.draftSubject);
+
+	if (!isLocked) {
+		state.draftSubject = unlockedSubject;
+		localStorage.setItem("draftSubject", state.draftSubject);
+	}
+
+	if (subjectSelectorRow) {
+		subjectSelectorRow.hidden = isLocked;
+	}
+
+	if (subjectSelect) {
+		const selectorValue = isLocked ? activeMeta.subject : unlockedSubject;
+		subjectSelect.value = selectorValue;
+	}
+
+	if (!subjectLockBadge) {
+		syncSelectionControlsLock();
+		return;
+	}
+
+	if (!isLocked) {
+		subjectLockBadge.hidden = true;
+		subjectLockBadge.textContent = "";
+		subjectLockBadge.removeAttribute("title");
+		syncSelectionControlsLock();
+		return;
+	}
+
+	const badgeLetter = getSubjectInitial(activeMeta.subject);
+	if (!badgeLetter) {
+		subjectLockBadge.hidden = true;
+		subjectLockBadge.textContent = "";
+		subjectLockBadge.removeAttribute("title");
+		syncSelectionControlsLock();
+		return;
+	}
+
+	subjectLockBadge.hidden = false;
+	subjectLockBadge.textContent = badgeLetter;
+	subjectLockBadge.title = `${activeMeta.subject} chat`;
+	syncSelectionControlsLock();
 }
 
 async function loadChats() {
@@ -1505,6 +1601,7 @@ function renderChatList(chats) {
 	// Clean up orphaned dropdown menus from previous render
 	// (dropdowns are appended to body, not chatList, so they persist)
 	document.querySelectorAll(".chat-dropdown").forEach(d => d.remove());
+	state.chatMetaById = {};
 
 	chatList.innerHTML = "";
 	if (!Array.isArray(chats) || chats.length === 0) {
@@ -1515,11 +1612,16 @@ function renderChatList(chats) {
 		state.activeChatId = null;
 		localStorage.removeItem("activeChatId");
 		updateTitleBar("Saivo");
+		updateActiveChatSubjectUi();
 		return;
 	}
 
 	let activeFound = false;
 	chats.forEach((chat) => {
+		const chatSubject = normalizeSessionSubject(chat.subject || "Anyone");
+		const hasMessages = Boolean(chat.has_messages);
+		setChatMeta(chat.id, chatSubject, hasMessages);
+
 		const button = document.createElement("button");
 		button.className = "history-item";
 		button.dataset.chatId = chat.id;
@@ -1527,6 +1629,14 @@ function renderChatList(chats) {
 		const icon = document.createElement("ion-icon");
 		icon.setAttribute("name", "chatbubble-ellipses-outline");
 		button.appendChild(icon);
+
+		if (hasMessages && chatSubject !== "Anyone") {
+			const badge = document.createElement("span");
+			badge.className = "chat-subject-badge";
+			badge.textContent = getSubjectInitial(chatSubject);
+			badge.title = `${chatSubject} chat`;
+			button.appendChild(badge);
+		}
 
 		// Chat title with CSS ellipsis (no text modification)
 		const label = document.createElement("span");
@@ -1632,6 +1742,8 @@ function renderChatList(chats) {
 		localStorage.removeItem("activeChatId");
 		updateTitleBar("Saivo");
 	}
+
+	updateActiveChatSubjectUi();
 }
 
 function setActiveChat(chatId, title) {
@@ -1665,6 +1777,7 @@ function setActiveChat(chatId, title) {
 	state.activeChatId = chatId;
 	storeSession();
 	updateTitleBar(title || "Untitled Chat");
+	updateActiveChatSubjectUi();
 
 	const buttons = chatList.querySelectorAll(".history-item");
 	buttons.forEach((btn) => {
@@ -1700,10 +1813,13 @@ function createNewChat() {
 	// Clear active chat
 	state.activeChatId = null;
 	localStorage.removeItem("activeChatId");
+	state.draftSubject = "Anyone";
+	localStorage.setItem("draftSubject", state.draftSubject);
 	setSessionSubject("Anyone");
 	messagesContainer.innerHTML = "";
 	updateTitleBar("Saivo");
 	setChatStatus("", false);
+	updateActiveChatSubjectUi();
 
 	// Show welcome screen for new chat
 	showWelcomeScreen();
@@ -1720,6 +1836,7 @@ async function loadMessages() {
 	if (!state.activeChatId) {
 		messagesContainer.innerHTML = "";
 		showWelcomeScreen();  // Show welcome when no active chat
+		updateActiveChatSubjectUi();
 		return;
 	}
 
@@ -1737,6 +1854,10 @@ async function loadMessages() {
 			const idxB = Number.isInteger(b && b.message_index) ? b.message_index : 0;
 			return idxA - idxB;
 		});
+
+		const activeMeta = getChatMeta(state.activeChatId);
+		setChatMeta(state.activeChatId, activeMeta.subject, allMessages.length > 0);
+		updateActiveChatSubjectUi();
 
 		const rawQuizzes = Array.isArray(quizzesPayload && quizzesPayload.quizzes)
 			? quizzesPayload.quizzes
@@ -1808,6 +1929,8 @@ async function sendMessage(content) {
 			return;
 		}
 
+		const pendingSubjectBeforeCreate = normalizeSessionSubject(state.draftSubject);
+
 		try {
 			const chat = await apiFetch("/chats", {
 				method: "POST",
@@ -1815,8 +1938,10 @@ async function sendMessage(content) {
 			});
 
 			state.activeChatId = chat.id;
+			setChatMeta(chat.id, pendingSubjectBeforeCreate, false);
 			storeSession();
 			chatTitle.textContent = chat.title || "New Chat";
+			updateActiveChatSubjectUi();
 
 			// Reload chats to update sidebar
 			await loadChats();
@@ -1826,6 +1951,11 @@ async function sendMessage(content) {
 			buttons.forEach((btn) => {
 				btn.classList.toggle("active", btn.dataset.chatId === chat.id);
 			});
+
+			setChatMeta(chat.id, pendingSubjectBeforeCreate, false);
+			state.draftSubject = pendingSubjectBeforeCreate;
+			localStorage.setItem("draftSubject", state.draftSubject);
+			updateActiveChatSubjectUi();
 		} catch (error) {
 			setChatStatus(error.message || "Unable to create chat");
 			return;
@@ -1838,7 +1968,9 @@ async function sendMessage(content) {
 	setChatStatus("", false);
 
 	const difficultyAtSend = normalizeDifficultyLevel(state.difficultyLevel);
-	const subjectAtSend = normalizeSessionSubject(state.sessionSubject);
+	const activeMetaBeforeSend = getChatMeta(state.activeChatId);
+	const isFirstMessageForChat = !activeMetaBeforeSend.hasMessages;
+	const selectedSubjectAtSend = normalizeSessionSubject(state.draftSubject);
 	const apiPrompt = buildApiPrompt(trimmedContent, difficultyAtSend);
 
 	// CHAT-SCOPED GENERATION: Track which chat is generating
@@ -1867,7 +1999,7 @@ async function sendMessage(content) {
 				content: trimmedContent,
 				api_prompt: apiPrompt,
 				difficulty_level: difficultyAtSend,
-				session_subject: subjectAtSend,
+				selected_subject: isFirstMessageForChat ? selectedSubjectAtSend : undefined,
 			},
 		});
 
@@ -1881,13 +2013,22 @@ async function sendMessage(content) {
 				if (!response) return;
 
 				const responseLevel = response.response_level || (difficultyAtSend !== "Neutral" ? difficultyAtSend : null);
+				const lockedChatSubject = normalizeSessionSubject(
+					response.chat_subject || (isFirstMessageForChat ? selectedSubjectAtSend : activeMetaBeforeSend.subject)
+				);
+				setChatMeta(state.activeChatId, lockedChatSubject, true);
+				updateActiveChatSubjectUi();
+
+				if (isFirstMessageForChat) {
+					await loadChats();
+				}
 
 				// REAL-TIME TITLE UPDATE: If server renamed the chat, update UI
 				if (response.new_title) {
 					chatTitle.textContent = response.new_title;
 					const chatItem = chatList.querySelector(`[data-chat-id="${state.activeChatId}"]`);
 					if (chatItem) {
-						const titleSpan = chatItem.querySelector("span");
+						const titleSpan = chatItem.querySelector(".chat-title");
 						if (titleSpan) {
 							titleSpan.textContent = response.new_title;
 						}
@@ -4559,7 +4700,6 @@ async function fetchQuizModalTip(questionIndex, question, selectedKey) {
 				correct_option: question.correct_option,
 				explanation: question.explanation || "",
 				difficulty_level: state.difficultyLevel,
-				session_subject: normalizeSessionSubject(state.sessionSubject),
 			},
 		});
 		feedbackText = result && typeof result.feedback === "string" ? result.feedback : "";
@@ -5055,7 +5195,6 @@ async function handleQuizAnswer(selectedBtn, allButtons, questionDiv, questionDa
 				correct_option: questionData.correct_option,
 				explanation: questionData.explanation || "",
 				difficulty_level: state.difficultyLevel,
-				session_subject: normalizeSessionSubject(state.sessionSubject),
 			},
 		});
 
@@ -5206,14 +5345,7 @@ function buildApiPrompt(content, difficultyLevel) {
 		prompt = `${prompt} at ${normalizedDifficulty.toLowerCase()} level`;
 	}
 
-	const normalizedSubject = normalizeSessionSubject(state.sessionSubject);
-	if (normalizedSubject === "Anyone") {
-		return prompt;
-	}
-
-	const mismatchMessage = `This question is not related to the current session subject (${normalizedSubject}). Please ask a ${normalizedSubject}-related question or switch subject to Anyone.`;
-
-	return `${prompt}\n\n[SESSION SUBJECT MODE]\nCurrent session subject: ${normalizedSubject}.\nAnswer only in the context of ${normalizedSubject}.\nIf the user's question is unrelated, respond with ONLY this exact sentence and nothing else:\n"${mismatchMessage}"`;
+	return prompt;
 }
 
 function setDifficultyLevel(level) {
@@ -5269,8 +5401,12 @@ function setSessionSubject(subject) {
 		return;
 	}
 
-	state.sessionSubject = normalizedSubject;
-	localStorage.setItem("sessionSubject", normalizedSubject);
+	state.draftSubject = normalizedSubject;
+	localStorage.setItem("draftSubject", normalizedSubject);
+
+	if (state.activeChatId && !isActiveChatSubjectLocked()) {
+		setChatMeta(state.activeChatId, normalizedSubject, false);
+	}
 
 	if (subjectSelect) {
 		subjectSelect.value = normalizedSubject;
@@ -5321,7 +5457,14 @@ if (state.difficultyLevel) {
 
 if (subjectSelect) {
 	subjectSelect.addEventListener("change", () => {
-		const currentSubject = normalizeSessionSubject(state.sessionSubject);
+		if (isActiveChatSubjectLocked()) {
+			const lockedSubject = getChatMeta(state.activeChatId).subject;
+			subjectSelect.value = lockedSubject;
+			showToast("Subject is locked for this chat. Start a new chat to choose another subject.");
+			return;
+		}
+
+		const currentSubject = normalizeSessionSubject(state.draftSubject);
 		const nextSubject = normalizeSessionSubject(subjectSelect.value);
 
 		if (isGenerating) {
@@ -5335,20 +5478,11 @@ if (subjectSelect) {
 			return;
 		}
 
-		const now = Date.now();
-		if (now < subjectSwitchCooldownUntil) {
-			const secondsLeft = Math.ceil((subjectSwitchCooldownUntil - now) / 1000);
-			subjectSelect.value = currentSubject;
-			showToast(`Please wait ${secondsLeft}s before changing subject again.`);
-			return;
-		}
-
 		setSessionSubject(nextSubject);
-		subjectSwitchCooldownUntil = Date.now() + SUBJECT_SWITCH_COOLDOWN_MS;
 	});
 }
 
-setSessionSubject(state.sessionSubject);
+setSessionSubject(state.draftSubject);
 
 async function initializeApp() {
 	if (!state.userId) {

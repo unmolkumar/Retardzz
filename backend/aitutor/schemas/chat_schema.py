@@ -18,6 +18,8 @@ class ChatResponse(BaseModel):
 	id: str
 	title: str
 	created_at: datetime
+	subject: str = "Anyone"
+	has_messages: bool = False
 
 
 class ChatListResponse(BaseModel):

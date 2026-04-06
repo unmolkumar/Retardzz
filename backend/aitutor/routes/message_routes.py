@@ -215,11 +215,26 @@ def _normalize_session_subject(value: Optional[str]) -> str:
     return "Anyone"
 
 
+def _resolve_chat_subject(chat_document: dict[str, object]) -> str:
+    """Resolve normalized chat subject from persisted chat document."""
+    return _normalize_session_subject(str(chat_document.get("subject", "Anyone")))
+
+
+def _selected_subject_from_payload(payload: SendMessageRequest) -> str:
+    """Resolve subject selected before first message; keeps backward compatibility."""
+    return _normalize_session_subject(payload.selected_subject or payload.session_subject)
+
+
+def _enrich_chat_response(response: dict[str, object], chat_subject: str, new_title: Optional[str]) -> dict[str, object]:
+    """Attach chat metadata returned to frontend after /chat/send."""
+    response["chat_subject"] = chat_subject
+    if new_title:
+        response["new_title"] = new_title
+    return response
+
+
 def _subject_mismatch_message(session_subject: str) -> str:
-    return (
-        f"This question is not related to the current session subject ({session_subject}). "
-        f"Please ask a {session_subject}-related question or switch subject to Anyone."
-    )
+    return f"This chat is locked to {session_subject}. Please ask a {session_subject}-related question."
 
 
 def _build_subject_guard_snippet(session_subject: str) -> str:
@@ -504,6 +519,12 @@ def _strip_subject_guard_from_prompt(value: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     ).strip()
+    cleaned = re.sub(
+        r"This chat is locked to [^\.]+\.\s*Please ask a [^\.]+-related question\.",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
     return cleaned
 
 
@@ -511,7 +532,6 @@ def _build_prompt_for_api(
     content: str,
     api_prompt: Optional[str],
     difficulty_level: str,
-    session_subject: str,
 ) -> str:
     """Build the exact prompt text sent to AI calls."""
     if api_prompt and api_prompt.strip():
@@ -651,6 +671,24 @@ async def send_message(
     if not chat_document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
+    existing_message = await db["messages"].find_one({"chat_id": chat_id}, {"_id": 1})
+    is_first_message_for_chat = existing_message is None
+
+    # The chat subject is chosen once (first message) and then stays locked forever.
+    chat_subject = _resolve_chat_subject(chat_document)
+    if is_first_message_for_chat:
+        chat_subject = _selected_subject_from_payload(payload)
+        await db["chats"].update_one(
+            {"_id": chat_id},
+            {"$set": {"subject": chat_subject}},
+        )
+    elif "subject" not in chat_document:
+        # Backfill legacy chats that predate the subject field.
+        await db["chats"].update_one(
+            {"_id": chat_id},
+            {"$set": {"subject": chat_subject}},
+        )
+
     # Save user message with sequential index.
     next_index = await _next_message_index(db, chat_id)
     assistant_index = next_index + 1
@@ -713,12 +751,10 @@ async def send_message(
     # Detect quiz/summary triggers in user message
     content_lower = payload.content.strip().lower()
     difficulty = _normalize_difficulty_level(payload.difficulty_level)
-    session_subject = _normalize_session_subject(payload.session_subject)
     prompt_for_api = _build_prompt_for_api(
         payload.content,
         payload.api_prompt,
         difficulty,
-        session_subject,
     )
     response_level = difficulty if difficulty != "Neutral" else None
 
@@ -748,12 +784,10 @@ async def send_message(
             "pending": False,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
-    if _should_block_for_subject(payload.content, session_subject):
-        reply = _build_subject_mismatch_response(session_subject)
+    if _should_block_for_subject(payload.content, chat_subject):
+        reply = _build_subject_mismatch_response(chat_subject)
 
         assistant_message = Message.create(
             chat_id=chat_id,
@@ -779,9 +813,7 @@ async def send_message(
             "pending": False,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     is_mindmap = _is_mindmap_request(payload.content)
     is_flashcard = _is_flashcard_request(payload.content)
@@ -813,16 +845,14 @@ async def send_message(
             "pending": False,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     if is_mindmap:
         mindmap_data = await generate_mindmap_payload(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         if str(mindmap_data.get("type", "")).strip().lower() != "mindmap":
@@ -854,9 +884,7 @@ async def send_message(
                 "pending": False,
                 "response_level": response_level,
             }
-            if new_title:
-                response["new_title"] = new_title
-            return response
+            return _enrich_chat_response(response, chat_subject, new_title)
 
         node_count = len(mindmap_data.get("nodes", []))
         mindmap_summary = (
@@ -884,16 +912,14 @@ async def send_message(
             "mindmap": mindmap_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     if is_flashcard:
         flashcard_data = await generate_flashcard_payload(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         if str(flashcard_data.get("type", "")).strip().lower() != "flashcard":
@@ -925,9 +951,7 @@ async def send_message(
                 "pending": False,
                 "response_level": response_level,
             }
-            if new_title:
-                response["new_title"] = new_title
-            return response
+            return _enrich_chat_response(response, chat_subject, new_title)
 
         card_count = len(flashcard_data.get("cards", []))
         flashcard_summary = (
@@ -955,9 +979,7 @@ async def send_message(
             "flashcard": flashcard_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     if is_quiz:
         # Generate structured quiz JSON
@@ -965,7 +987,7 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         if str(quiz_data.get("type", "")).strip().lower() != "quiz":
@@ -997,9 +1019,7 @@ async def send_message(
                 "pending": False,
                 "response_level": response_level,
             }
-            if new_title:
-                response["new_title"] = new_title
-            return response
+            return _enrich_chat_response(response, chat_subject, new_title)
 
         # Save a text summary to DB so history makes sense
         question_count = len(quiz_data.get("questions", []))
@@ -1028,9 +1048,7 @@ async def send_message(
             "quiz": quiz_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     elif is_summary:
         # Generate structured summary JSON
@@ -1038,7 +1056,7 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
 
         # Save a text summary to DB
@@ -1069,9 +1087,7 @@ async def send_message(
             "summary": summary_data,
             "response_level": response_level,
         }
-        if new_title:
-            response["new_title"] = new_title
-        return response
+        return _enrich_chat_response(response, chat_subject, new_title)
 
     # --- Normal chat flow (with difficulty setting) ---
     reply = process_logic(payload.content)
@@ -1081,11 +1097,11 @@ async def send_message(
             message=prompt_for_api,
             context=context,
             difficulty_level=difficulty,
-            session_subject=session_subject,
+            session_subject=chat_subject,
         )
         used_ai = True
 
-    reply = _enforce_exact_subject_mismatch_reply(reply, session_subject)
+    reply = _enforce_exact_subject_mismatch_reply(reply, chat_subject)
 
     # --- DATA LOSS FIX: ALWAYS save full response IMMEDIATELY ---
     assistant_message = Message.create(
@@ -1116,10 +1132,7 @@ async def send_message(
         "response_level": response_level,
     }
     
-    if new_title:
-        response["new_title"] = new_title
-    
-    return response
+    return _enrich_chat_response(response, chat_subject, new_title)
 
 
 # --- Schema for applying STOP marker to already-saved response ---
@@ -1246,7 +1259,7 @@ async def submit_quiz_answer(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found for user")
 
     difficulty = _normalize_difficulty_level(payload.difficulty_level)
-    session_subject = _normalize_session_subject(payload.session_subject)
+    session_subject = _resolve_chat_subject(chat_document)
     response_level = difficulty if difficulty != "Neutral" else None
 
     # Generate AI feedback for the selected answer

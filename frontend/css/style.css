@@ -234,6 +234,28 @@ body {
 	min-width: 0;
 }
 
+.chat-subject-badge {
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	flex-shrink: 0;
+	background: rgba(255, 255, 255, 0.12);
+	color: #ffffff;
+	border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.history-item.active .chat-subject-badge {
+	background: rgba(26, 26, 26, 0.08);
+	border-color: rgba(26, 26, 26, 0.2);
+	color: #111111;
+}
+
 /* Three-dot menu button - hidden by default, shown on hover */
 .history-item .menu-btn {
 	display: none;
@@ -502,6 +524,27 @@ body {
 .header-subject-controls .subject-selector-row {
 	justify-content: flex-start;
 	margin: 0;
+}
+
+.subject-lock-badge {
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	background: rgba(124, 58, 237, 0.12);
+	color: #5b21b6;
+	border: 1px solid rgba(124, 58, 237, 0.35);
+}
+
+[data-theme="dark"] .subject-lock-badge {
+	background: rgba(196, 181, 253, 0.16);
+	color: #ddd6fe;
+	border-color: rgba(196, 181, 253, 0.32);
 }
 
 .header-chat-title {

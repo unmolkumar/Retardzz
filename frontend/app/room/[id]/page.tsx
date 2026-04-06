@@ -1,3 +1,4 @@
+import VoiceChat from "../../../components/room/core/VoiceChat";
 import PomodoroTimer from "../../../components/room/core/PomodoroTimer";
 import AITutor from "../../../components/ai/AITutor";
 import PollManager from "../../../components/polls/PollManager";
@@ -17,6 +18,7 @@ export default function RoomPage({ params }: { params: { id: string } }) {
         <h2>Room <h2>Room & Voice (Member 3)</h2><p>Room ID: {params.id}</p> Voice (Member 3)</h2>
 <p className="mb-4">Room ID: {params.id}</p>
 <PomodoroTimer roomId={params.id} />
+<VoiceChat roomId={params.id} userId="temp-user" />
       </div>
     </div>
   );

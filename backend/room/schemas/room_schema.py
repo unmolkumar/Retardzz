@@ -78,6 +78,37 @@ class RoomJoinRequestStatusResponse(BaseModel):
 class RoomJoinRequestStatusListResponse(BaseModel):
 	requests: List[RoomJoinRequestStatusResponse]
 
+
+class RoomStudyStartRequest(BaseModel):
+	mode_key: str = Field(default="focus", min_length=1, max_length=30)
+	duration_seconds: int = Field(default=1500, ge=60, le=14400)
+
+
+class RoomStudyMemberResponse(BaseModel):
+	username: str
+	total_seconds: int
+	is_live: bool
+	date_key: str
+	started_at: Optional[datetime] = None
+	active_mode_key: Optional[str] = None
+	active_target_seconds: Optional[int] = None
+	updated_at: Optional[datetime] = None
+
+	model_config = ConfigDict(from_attributes=True)
+
+
+class RoomStudyStatsResponse(BaseModel):
+	members: List[RoomStudyMemberResponse]
+	live_count: int
+	date_key: str
+
+
+class RoomStudyActionResponse(BaseModel):
+	message: str
+	total_seconds: int
+	is_live: bool
+	date_key: str
+
 class LeaveRoomResponse(BaseModel):
 	message: str
 	room_deleted: bool = False

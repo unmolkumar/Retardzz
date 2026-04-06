@@ -252,6 +252,60 @@
 					<button class="secondary-btn small-btn" id="open-manage-btn">Manage Room</button>
 				</div>
 
+				<div class="study-stage">
+					<aside class="study-modes-card">
+						<div class="study-modes-tabs">
+							<button class="study-tab active" type="button" data-mode="focus">Pomodoro</button>
+							<button class="study-tab" type="button" data-mode="custom">Timer</button>
+						</div>
+
+						<div class="study-presets">
+							<button class="study-mode-btn active" type="button" data-mode-key="focus" data-minutes="25" data-tracks-study="true">
+								<span class="study-mode-title">Focus Session</span>
+								<span class="study-mode-sub">25 minutes of study</span>
+							</button>
+							<button class="study-mode-btn" type="button" data-mode-key="short" data-minutes="5" data-tracks-study="false">
+								<span class="study-mode-title">Short Break</span>
+								<span class="study-mode-sub">5 minutes to recharge</span>
+							</button>
+							<button class="study-mode-btn" type="button" data-mode-key="long" data-minutes="15" data-tracks-study="false">
+								<span class="study-mode-title">Long Break</span>
+								<span class="study-mode-sub">15 minutes of rest</span>
+							</button>
+						</div>
+
+						<div class="study-placeholder-card">
+							<h4>Whiteboard</h4>
+							<p>Your friend is building this. We will plug it in here when code arrives.</p>
+							<button class="secondary-btn small-btn" type="button" disabled>Waiting for whiteboard code</button>
+						</div>
+					</aside>
+
+					<section class="study-timer-card">
+						<div class="study-ring" id="study-ring">
+							<div class="study-ring-inner">
+								<div class="study-time-display" id="study-time-display">25:00</div>
+								<div class="study-mode-label" id="study-mode-label">Focus Session</div>
+							</div>
+						</div>
+
+						<div class="study-actions">
+							<button class="primary-btn" type="button" id="study-toggle-btn">Start</button>
+							<button class="secondary-btn" type="button" id="study-reset-btn">Reset</button>
+						</div>
+						<div id="study-status" class="form-helper"></div>
+					</section>
+
+					<aside class="studyboard-card">
+						<div class="room-card-header">
+							<h3>Room Studyboard</h3>
+							<button class="secondary-btn small-btn" id="refresh-study-btn">Refresh</button>
+						</div>
+						<p class="room-card-subtitle" id="studyboard-date-label">See who studied most and who is LIVE right now.</p>
+						<div id="study-member-list" class="study-member-list"></div>
+					</aside>
+				</div>
+
 				<div id="chat-view-messages" class="chat-messages-stack"></div>
 
                 <div class="input-container">

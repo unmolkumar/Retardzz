@@ -14,6 +14,10 @@ from .room_schema import (
 	RoomJoinApprovalListResponse,
 	RoomJoinRequestStatusResponse,
 	RoomJoinRequestStatusListResponse,
+	RoomStudyStartRequest,
+	RoomStudyMemberResponse,
+	RoomStudyStatsResponse,
+	RoomStudyActionResponse,
 	LeaveRoomResponse,
 )
 from .message_schema import MessageCreateRequest, MessageResponse, MessageListResponse, MemberResponse, MemberListResponse
@@ -26,6 +30,8 @@ __all__ = [
 	"RoomInvitationResponse", "RoomInvitationListResponse",
 	"RoomJoinApprovalResponse", "RoomJoinApprovalListResponse",
 	"RoomJoinRequestStatusResponse", "RoomJoinRequestStatusListResponse",
+	"RoomStudyStartRequest",
+	"RoomStudyMemberResponse", "RoomStudyStatsResponse", "RoomStudyActionResponse",
 	"MessageCreateRequest", "MessageResponse", "MessageListResponse",
 	"MemberResponse", "MemberListResponse"
 ]

@@ -5,6 +5,7 @@ from ..schemas import (
 	RoomRemoveMemberRequest, RoomResponse, RoomListResponse,
 	RoomActionResponse, RoomInvitationListResponse, RoomJoinApprovalListResponse,
 	RoomJoinRequestStatusListResponse,
+	RoomStudyStartRequest, RoomStudyActionResponse, RoomStudyStatsResponse,
 	LeaveRoomResponse,
 	MessageCreateRequest, MessageResponse, MessageListResponse,
 	MemberListResponse
@@ -14,7 +15,8 @@ from ..services import (
 	get_pending_invitations, accept_invitation, reject_invitation,
 	get_join_requests, get_my_join_request_statuses, approve_join_request, reject_join_request,
 	get_room_by_id, get_rooms_for_user, send_message, get_messages,
-	get_room_members, remove_member_from_room, leave_room, delete_room
+	get_room_members, get_room_study_stats, start_study_session, stop_study_session,
+	remove_member_from_room, leave_room, delete_room
 )
 
 router = APIRouter(prefix="/api/room", tags=["Study Room"])
@@ -94,6 +96,28 @@ async def api_get_members(room_id: str, x_username: str = Depends(get_current_us
 	"""Lists all members of a room for current user."""
 	members = await get_room_members(room_id, x_username)
 	return {"members": members}
+
+
+@router.get("/{room_id}/study/stats", response_model=RoomStudyStatsResponse)
+async def api_get_room_study_stats(room_id: str, x_username: str = Depends(get_current_user)):
+	"""Returns per-member study time and live studying state for a room."""
+	return await get_room_study_stats(room_id, x_username)
+
+
+@router.post("/{room_id}/study/start", response_model=RoomStudyActionResponse)
+async def api_start_study_session(
+	room_id: str,
+	req: RoomStudyStartRequest,
+	x_username: str = Depends(get_current_user),
+):
+	"""Marks current user as actively studying in this room."""
+	return await start_study_session(room_id, x_username, mode_key=req.mode_key, duration_seconds=req.duration_seconds)
+
+
+@router.post("/{room_id}/study/stop", response_model=RoomStudyActionResponse)
+async def api_stop_study_session(room_id: str, x_username: str = Depends(get_current_user)):
+	"""Stops the current user's live study session and updates totals."""
+	return await stop_study_session(room_id, x_username)
 
 @router.post("/{room_id}/remove-member", response_model=RoomActionResponse)
 async def api_remove_member(room_id: str, req: RoomRemoveMemberRequest, x_username: str = Depends(get_current_user)):

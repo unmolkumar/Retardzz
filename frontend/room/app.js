@@ -1,6 +1,9 @@
 const API_BASE = 'http://127.0.0.1:8000/api/room';
 const REQUEST_TIMEOUT_MS = 15000;
 const NOTIFICATION_POLL_MS = 20000;
+const STUDY_STATS_POLL_MS = 10000;
+const MAX_ACTIVITY_NOTIFICATIONS = 20;
+const STUDY_TIMER_STORAGE_KEY = 'saivo_room_timer_state';
 
 let currentUser = localStorage.getItem('username');
 let activeRoom = null;
@@ -8,11 +11,32 @@ let currentInviteCode = '';
 let activeRoomAdmin = '';
 let refreshInterval = null;
 let notificationInterval = null;
+let studyStatsInterval = null;
 let roomCache = [];
+let unreadActivityCount = 0;
+
+const STUDY_MODE_CONFIG = {
+    focus: { label: 'Focus Session', minutes: 25, tracksStudy: true, color: '#ef4444' },
+    short: { label: 'Short Break', minutes: 5, tracksStudy: false, color: '#22c55e' },
+    long: { label: 'Long Break', minutes: 15, tracksStudy: false, color: '#60a5fa' }
+};
+
+const studyState = {
+    modeKey: 'focus',
+    durationSeconds: STUDY_MODE_CONFIG.focus.minutes * 60,
+    remainingSeconds: STUDY_MODE_CONFIG.focus.minutes * 60,
+    timerId: null,
+    running: false,
+    isLiveStudying: false,
+    latestMembers: [],
+    serverStartedAt: null,
+    dateKey: ''
+};
 
 const notificationStore = {
     invitations: [],
-    requestStatuses: []
+    requestStatuses: [],
+    activity: []
 };
 
 if (!currentUser) {
@@ -65,7 +89,17 @@ const ui = {
     notificationBadge: document.getElementById('notification-badge'),
     notificationPanel: document.getElementById('notification-panel'),
     notificationList: document.getElementById('notification-list'),
-    notificationRefreshBtn: document.getElementById('notification-refresh-btn')
+    notificationRefreshBtn: document.getElementById('notification-refresh-btn'),
+    studyTabs: Array.from(document.querySelectorAll('.study-tab')),
+    studyModeButtons: Array.from(document.querySelectorAll('.study-mode-btn')),
+    studyRing: document.getElementById('study-ring'),
+    studyTimeDisplay: document.getElementById('study-time-display'),
+    studyModeLabel: document.getElementById('study-mode-label'),
+    studyToggleBtn: document.getElementById('study-toggle-btn'),
+    studyResetBtn: document.getElementById('study-reset-btn'),
+    refreshStudyBtn: document.getElementById('refresh-study-btn'),
+    studyMemberList: document.getElementById('study-member-list'),
+    studyDateLabel: document.getElementById('studyboard-date-label')
 };
 
 function showView(viewName) {
@@ -95,7 +129,8 @@ function clearStatus() {
         'invite-copy-status',
         'action-status',
         'chat-error',
-        'room-action-note'
+        'room-action-note',
+        'study-status'
     ].forEach((id) => {
         const el = document.getElementById(id);
         if (!el) {
@@ -151,6 +186,23 @@ function resetRoomContext() {
         clearInterval(refreshInterval);
         refreshInterval = null;
     }
+
+    if (studyStatsInterval) {
+        clearInterval(studyStatsInterval);
+        studyStatsInterval = null;
+    }
+
+    stopLocalStudyCountdown();
+
+    studyState.modeKey = 'focus';
+    studyState.durationSeconds = STUDY_MODE_CONFIG.focus.minutes * 60;
+    studyState.remainingSeconds = STUDY_MODE_CONFIG.focus.minutes * 60;
+    studyState.isLiveStudying = false;
+    studyState.latestMembers = [];
+    studyState.serverStartedAt = null;
+    studyState.dateKey = '';
+    renderStudyTimerUI();
+    renderStudyMembers([]);
 }
 
 function isCurrentUserAdmin() {
@@ -261,6 +313,481 @@ function closeMobileSidebar() {
     document.body.classList.remove('sidebar-open');
 }
 
+function stopLocalStudyCountdown() {
+    if (studyState.timerId) {
+        clearInterval(studyState.timerId);
+        studyState.timerId = null;
+    }
+    studyState.running = false;
+}
+
+function startLocalStudyCountdown() {
+    if (studyState.timerId) {
+        clearInterval(studyState.timerId);
+    }
+    studyState.running = true;
+    studyState.timerId = setInterval(() => {
+        runStudyCountdownTick();
+    }, 1000);
+}
+
+function writeStudyTimerSnapshot() {
+    if (!activeRoom) {
+        return;
+    }
+
+    const snapshot = {
+        roomId: activeRoom,
+        modeKey: studyState.modeKey,
+        durationSeconds: studyState.durationSeconds,
+        remainingSeconds: studyState.remainingSeconds,
+        running: studyState.running,
+        isLiveStudying: studyState.isLiveStudying,
+        updatedAtMs: Date.now()
+    };
+
+    localStorage.setItem(STUDY_TIMER_STORAGE_KEY, JSON.stringify(snapshot));
+}
+
+function clearStudyTimerSnapshot() {
+    localStorage.removeItem(STUDY_TIMER_STORAGE_KEY);
+}
+
+function readStudyTimerSnapshot() {
+    const raw = localStorage.getItem(STUDY_TIMER_STORAGE_KEY);
+    if (!raw) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function restoreStudyTimerFromSnapshotForRoom(roomId, allowLiveSnapshot = true) {
+    const snapshot = readStudyTimerSnapshot();
+    if (!snapshot || snapshot.roomId !== roomId) {
+        return false;
+    }
+
+    if (!allowLiveSnapshot && snapshot.isLiveStudying) {
+        return false;
+    }
+
+    const modeKey = STUDY_MODE_CONFIG[snapshot.modeKey] ? snapshot.modeKey : 'focus';
+    const durationSeconds = Number(snapshot.durationSeconds) > 0
+        ? Number(snapshot.durationSeconds)
+        : STUDY_MODE_CONFIG[modeKey].minutes * 60;
+    let remainingSeconds = Number(snapshot.remainingSeconds);
+    if (!Number.isFinite(remainingSeconds) || remainingSeconds < 0) {
+        remainingSeconds = durationSeconds;
+    }
+
+    if (snapshot.running) {
+        const elapsedSinceSave = Math.max(
+            0,
+            Math.floor((Date.now() - Number(snapshot.updatedAtMs || Date.now())) / 1000)
+        );
+        remainingSeconds = Math.max(0, remainingSeconds - elapsedSinceSave);
+    }
+
+    studyState.modeKey = modeKey;
+    studyState.durationSeconds = durationSeconds;
+    studyState.remainingSeconds = remainingSeconds;
+    studyState.isLiveStudying = Boolean(snapshot.isLiveStudying);
+
+    if (snapshot.running && remainingSeconds > 0) {
+        startLocalStudyCountdown();
+    } else {
+        stopLocalStudyCountdown();
+    }
+
+    renderStudyTimerUI();
+    writeStudyTimerSnapshot();
+    return true;
+}
+
+function formatClock(totalSeconds) {
+    const safe = Math.max(0, Number(totalSeconds) || 0);
+    const mins = Math.floor(safe / 60);
+    const secs = safe % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatStudyDuration(totalSeconds) {
+    const safe = Math.max(0, Number(totalSeconds) || 0);
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    const seconds = safe % 60;
+    if (hours > 0) {
+        return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+    }
+    if (minutes > 0) {
+        return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+    }
+    return `${seconds}s`;
+}
+
+function getActiveStudyModeConfig() {
+    return STUDY_MODE_CONFIG[studyState.modeKey] || STUDY_MODE_CONFIG.focus;
+}
+
+function updateStudyModeButtons() {
+    ui.studyModeButtons.forEach((button) => {
+        const isActive = button.dataset.modeKey === studyState.modeKey;
+        button.classList.toggle('active', isActive);
+    });
+
+    ui.studyTabs.forEach((tab) => {
+        if (tab.dataset.mode === 'pomodoro') {
+            tab.classList.toggle('active', ['focus', 'short', 'long'].includes(studyState.modeKey));
+        }
+        if (tab.dataset.mode === 'custom') {
+            tab.classList.toggle('active', false);
+        }
+    });
+}
+
+function renderStudyTimerUI() {
+    const mode = getActiveStudyModeConfig();
+    const progressRatio = studyState.durationSeconds > 0
+        ? (studyState.durationSeconds - studyState.remainingSeconds) / studyState.durationSeconds
+        : 0;
+    const angle = Math.round(Math.min(1, Math.max(0, progressRatio)) * 360);
+
+    if (ui.studyRing) {
+        ui.studyRing.style.background = `conic-gradient(${mode.color} ${angle}deg, rgba(255, 255, 255, 0.08) ${angle}deg 360deg)`;
+    }
+
+    if (ui.studyTimeDisplay) {
+        ui.studyTimeDisplay.textContent = formatClock(studyState.remainingSeconds);
+    }
+
+    if (ui.studyModeLabel) {
+        ui.studyModeLabel.textContent = mode.label;
+    }
+
+    if (ui.studyToggleBtn) {
+        ui.studyToggleBtn.textContent = studyState.running ? 'Pause' : 'Start';
+    }
+
+    updateStudyModeButtons();
+
+    if (activeRoom) {
+        writeStudyTimerSnapshot();
+    }
+}
+
+function renderStudyMembers(members) {
+    if (!ui.studyMemberList) {
+        return;
+    }
+
+    if (ui.studyDateLabel) {
+        const suffix = studyState.dateKey ? `Daily totals (${studyState.dateKey})` : 'Daily totals';
+        ui.studyDateLabel.textContent = `See who studied most and who is LIVE right now. ${suffix}.`;
+    }
+
+    ui.studyMemberList.innerHTML = '';
+
+    if (!members.length) {
+        ui.studyMemberList.innerHTML = '<div class="room-list-notice">No study activity yet.</div>';
+        return;
+    }
+
+    members.forEach((member) => {
+        const row = document.createElement('div');
+        row.className = 'study-member-row';
+
+        const meta = document.createElement('div');
+        meta.className = 'study-member-meta';
+
+        const avatar = document.createElement('div');
+        avatar.className = 'member-avatar';
+        avatar.textContent = getInitials(member.username);
+
+        const name = document.createElement('div');
+        name.className = 'study-member-name';
+        name.textContent = member.username;
+
+        if (member.username === currentUser) {
+            name.textContent = `${member.username} (You)`;
+        }
+
+        meta.appendChild(avatar);
+        meta.appendChild(name);
+
+        const right = document.createElement('div');
+        right.className = 'row-actions';
+
+        const total = document.createElement('span');
+        total.className = 'study-time-total';
+        total.textContent = formatStudyDuration(member.total_seconds);
+
+        const livePill = document.createElement('span');
+        livePill.className = `study-live-pill ${member.is_live ? 'live' : 'offline'}`;
+        livePill.textContent = member.is_live ? 'LIVE' : 'Idle';
+
+        right.appendChild(total);
+        right.appendChild(livePill);
+
+        row.appendChild(meta);
+        row.appendChild(right);
+        ui.studyMemberList.appendChild(row);
+    });
+}
+
+async function syncStudySessionFromMembers() {
+    const selfStats = studyState.latestMembers.find((entry) => entry.username === currentUser);
+    if (!selfStats || !selfStats.is_live) {
+        studyState.isLiveStudying = false;
+        studyState.serverStartedAt = null;
+
+        const mode = getActiveStudyModeConfig();
+        if (mode.tracksStudy && studyState.running) {
+            stopLocalStudyCountdown();
+            renderStudyTimerUI();
+        }
+
+        const restored = restoreStudyTimerFromSnapshotForRoom(activeRoom, false);
+        if (!restored) {
+            renderStudyTimerUI();
+        }
+        return;
+    }
+
+    const modeKey = STUDY_MODE_CONFIG[selfStats.active_mode_key] ? selfStats.active_mode_key : 'focus';
+    const targetSeconds = Number(selfStats.active_target_seconds) > 0
+        ? Number(selfStats.active_target_seconds)
+        : STUDY_MODE_CONFIG[modeKey].minutes * 60;
+
+    const startedAtMs = Date.parse(selfStats.started_at || '');
+    const elapsed = Number.isNaN(startedAtMs)
+        ? 0
+        : Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+    const remaining = Math.max(0, targetSeconds - elapsed);
+
+    studyState.modeKey = modeKey;
+    studyState.durationSeconds = targetSeconds;
+    studyState.remainingSeconds = remaining;
+    studyState.isLiveStudying = true;
+    studyState.serverStartedAt = selfStats.started_at || null;
+
+    if (remaining <= 0) {
+        stopLocalStudyCountdown();
+        await stopLiveStudySession('Focus session completed while you were away.');
+        await loadStudyStats(false);
+        return;
+    }
+
+    if (!studyState.running) {
+        startLocalStudyCountdown();
+    }
+
+    renderStudyTimerUI();
+}
+
+async function loadStudyStats(showErrors = true) {
+    if (!activeRoom) {
+        studyState.latestMembers = [];
+        renderStudyMembers([]);
+        return;
+    }
+
+    try {
+        const res = await fetchWithTimeout(`${API_BASE}/${activeRoom}/study/stats`, { headers: getHeaders() });
+        if (!res.ok) {
+            throw new Error(await getErrorMessage(res, 'Failed to load study stats'));
+        }
+
+        const data = await res.json();
+        studyState.latestMembers = data.members || [];
+        studyState.dateKey = data.date_key || '';
+        await syncStudySessionFromMembers();
+        renderStudyMembers(studyState.latestMembers);
+    } catch (error) {
+        if (showErrors) {
+            setStatus('study-status', error.message || 'Failed to load study stats.');
+        }
+        renderStudyMembers([]);
+    }
+}
+
+async function startLiveStudySession() {
+    if (!activeRoom) {
+        return false;
+    }
+
+    const mode = getActiveStudyModeConfig();
+
+    const res = await fetchWithTimeout(`${API_BASE}/${activeRoom}/study/start`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+            mode_key: studyState.modeKey,
+            duration_seconds: studyState.durationSeconds
+        })
+    });
+
+    if (!res.ok) {
+        setStatus('study-status', await getErrorMessage(res, 'Failed to start study session'));
+        return false;
+    }
+
+    const payload = await res.json();
+    studyState.dateKey = payload.date_key || studyState.dateKey;
+
+    studyState.isLiveStudying = true;
+    setStatus('study-status', mode.tracksStudy ? 'Focus session running live.' : `${mode.label} running.`);
+    return true;
+}
+
+async function stopLiveStudySession(messageOverride = '') {
+    if (!activeRoom || !studyState.isLiveStudying) {
+        return true;
+    }
+
+    const res = await fetchWithTimeout(`${API_BASE}/${activeRoom}/study/stop`, {
+        method: 'POST',
+        headers: getHeaders()
+    });
+
+    if (!res.ok) {
+        setStatus('study-status', await getErrorMessage(res, 'Failed to stop study session'));
+        return false;
+    }
+
+    studyState.isLiveStudying = false;
+    studyState.serverStartedAt = null;
+
+    const payload = await res.json();
+    studyState.dateKey = payload.date_key || studyState.dateKey;
+    if (messageOverride) {
+        setStatus('study-status', messageOverride);
+    } else {
+        setStatus('study-status', payload.message || 'Study session stopped.');
+    }
+
+    return true;
+}
+
+async function setStudyMode(modeKey) {
+    if (!STUDY_MODE_CONFIG[modeKey]) {
+        return;
+    }
+
+    if (studyState.running) {
+        stopLocalStudyCountdown();
+    }
+
+    const previousMode = getActiveStudyModeConfig();
+    if (previousMode.tracksStudy && studyState.isLiveStudying) {
+        await stopLiveStudySession('Focus session paused.');
+    }
+
+    studyState.modeKey = modeKey;
+    studyState.durationSeconds = STUDY_MODE_CONFIG[modeKey].minutes * 60;
+    studyState.remainingSeconds = studyState.durationSeconds;
+    studyState.serverStartedAt = null;
+    renderStudyTimerUI();
+}
+
+function runStudyCountdownTick() {
+    if (!studyState.running) {
+        return;
+    }
+
+    studyState.remainingSeconds = Math.max(0, studyState.remainingSeconds - 1);
+    renderStudyTimerUI();
+
+    if (studyState.remainingSeconds > 0) {
+        return;
+    }
+
+    stopLocalStudyCountdown();
+
+    const mode = getActiveStudyModeConfig();
+    if (mode.tracksStudy) {
+        stopLiveStudySession('Focus session completed. Great work.').then(() => {
+            pushActivityNotification('Focus session complete', 'Your tracked focus session ended successfully.', 'success');
+            loadStudyStats(false);
+            renderStudyTimerUI();
+        });
+        return;
+    }
+
+    setStatus('study-status', `${mode.label} completed.`);
+    renderStudyTimerUI();
+}
+
+async function handleStudyToggle() {
+    if (!activeRoom) {
+        setStatus('study-status', 'Open a room first.');
+        return;
+    }
+
+    const mode = getActiveStudyModeConfig();
+
+    if (studyState.running) {
+        stopLocalStudyCountdown();
+        if (mode.tracksStudy) {
+            await stopLiveStudySession('Focus session paused.');
+            await loadStudyStats(false);
+        }
+        renderStudyTimerUI();
+        return;
+    }
+
+    if (mode.tracksStudy) {
+        const started = await startLiveStudySession();
+        if (!started) {
+            return;
+        }
+        studyState.serverStartedAt = new Date().toISOString();
+    }
+
+    startLocalStudyCountdown();
+    if (!mode.tracksStudy) {
+        setStatus('study-status', `${mode.label} running.`);
+    }
+    renderStudyTimerUI();
+}
+
+async function handleStudyReset() {
+    if (studyState.running) {
+        stopLocalStudyCountdown();
+    }
+
+    const mode = getActiveStudyModeConfig();
+    if (mode.tracksStudy) {
+        await stopLiveStudySession('Focus session reset.');
+        await loadStudyStats(false);
+    }
+
+    studyState.remainingSeconds = studyState.durationSeconds;
+    studyState.serverStartedAt = null;
+    renderStudyTimerUI();
+}
+
+function pushActivityNotification(title, body, tone = 'info') {
+    notificationStore.activity.unshift({
+        id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        title,
+        body,
+        tone,
+        created_at: new Date().toISOString()
+    });
+
+    if (notificationStore.activity.length > MAX_ACTIVITY_NOTIFICATIONS) {
+        notificationStore.activity = notificationStore.activity.slice(0, MAX_ACTIVITY_NOTIFICATIONS);
+    }
+
+    unreadActivityCount += 1;
+    renderNotifications();
+}
+
 function setNotificationBadge(count) {
     if (!ui.notificationBadge) {
         return;
@@ -314,6 +841,16 @@ function getJoinStatusClass(status) {
     return 'status-pending';
 }
 
+function getActivityToneClass(tone) {
+    if (tone === 'success') {
+        return 'status-approved';
+    }
+    if (tone === 'danger') {
+        return 'status-rejected';
+    }
+    return 'status-pending';
+}
+
 function buildNotificationEntries() {
     const invitationEntries = notificationStore.invitations.map((invitation) => ({
         type: 'invitation',
@@ -327,8 +864,15 @@ function buildNotificationEntries() {
         payload: request
     }));
 
+    const activityEntries = notificationStore.activity.map((activity) => ({
+        type: 'activity',
+        createdAt: activity.created_at,
+        payload: activity
+    }));
+
     return invitationEntries
         .concat(requestEntries)
+        .concat(activityEntries)
         .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
         .slice(0, 40);
 }
@@ -390,7 +934,7 @@ function renderNotifications() {
 
             actions.appendChild(acceptBtn);
             actions.appendChild(rejectBtn);
-        } else {
+        } else if (entry.type === 'join-request') {
             const request = entry.payload;
             const roomName = request.room_name || getRoomNameFromCache(request.room_id, 'Room');
             title.textContent = `Request: ${roomName}`;
@@ -415,6 +959,15 @@ function renderNotifications() {
                     actions.appendChild(openBtn);
                 }
             }
+        } else {
+            const activity = entry.payload;
+            title.textContent = activity.title;
+            body.textContent = activity.body;
+
+            const statusPill = document.createElement('span');
+            statusPill.className = `notification-status-pill ${getActivityToneClass(activity.tone)}`;
+            statusPill.textContent = 'Update';
+            actions.appendChild(statusPill);
         }
 
         top.appendChild(title);
@@ -428,7 +981,7 @@ function renderNotifications() {
 
     const invitationCount = notificationStore.invitations.length;
     const pendingRequestCount = notificationStore.requestStatuses.filter((request) => request.status === 'pending').length;
-    setNotificationBadge(invitationCount + pendingRequestCount);
+    setNotificationBadge(invitationCount + pendingRequestCount + unreadActivityCount);
 }
 
 function closeNotifications() {
@@ -452,6 +1005,8 @@ async function toggleNotifications() {
 
     ui.notificationPanel.classList.remove('room-hidden');
     ui.notificationBtn.classList.add('active');
+    unreadActivityCount = 0;
+    renderNotifications();
     await refreshNotifications(true);
 }
 
@@ -807,6 +1362,10 @@ async function loadMessages() {
 }
 
 async function selectRoom(room) {
+    if (activeRoom && activeRoom !== room.id && studyState.isLiveStudying) {
+        await stopLiveStudySession('Focus session paused while switching rooms.');
+    }
+
     activeRoom = room.id;
     currentInviteCode = room.invite_code;
     activeRoomAdmin = room.admin_username || '';
@@ -819,6 +1378,9 @@ async function selectRoom(room) {
     clearErrors();
     clearStatus();
     closeNotifications();
+    if (!restoreStudyTimerFromSnapshotForRoom(activeRoom)) {
+        renderStudyTimerUI();
+    }
     showView('chat');
     closeMobileSidebar();
 
@@ -827,13 +1389,21 @@ async function selectRoom(room) {
         refreshNotifications(false),
         loadMessages(),
         loadMembers(false),
-        loadJoinRequests(false)
+        loadJoinRequests(false),
+        loadStudyStats(false)
     ]);
 
     if (refreshInterval) {
         clearInterval(refreshInterval);
     }
     refreshInterval = setInterval(loadMessages, 3000);
+
+    if (studyStatsInterval) {
+        clearInterval(studyStatsInterval);
+    }
+    studyStatsInterval = setInterval(() => {
+        loadStudyStats(false);
+    }, STUDY_STATS_POLL_MS);
 }
 
 async function openManageView() {
@@ -921,7 +1491,7 @@ async function approveJoinRequest(requestId, username) {
         }
 
         setStatus('action-status', `${username} approved.`);
-        await Promise.all([loadJoinRequests(false), loadMembers(false), fetchMyRooms(), refreshNotifications(false)]);
+        await Promise.all([loadJoinRequests(false), loadMembers(false), loadStudyStats(false), fetchMyRooms(), refreshNotifications(false)]);
     } catch (error) {
         showError('request-error', getNetworkErrorMessage(error));
     }
@@ -974,7 +1544,12 @@ async function removeMember(targetUsername) {
         }
 
         setStatus('action-status', `${targetUsername} removed from room.`);
-        await Promise.all([loadMembers(false), fetchMyRooms(), refreshNotifications(false)]);
+        pushActivityNotification(
+            'Member removed',
+            `${targetUsername} was removed from the room.`,
+            'danger'
+        );
+        await Promise.all([loadMembers(false), loadStudyStats(false), fetchMyRooms(), refreshNotifications(false)]);
     } catch (error) {
         showError('manage-error', getNetworkErrorMessage(error));
     }
@@ -994,6 +1569,11 @@ async function leaveRoom() {
         return;
     }
 
+    if (studyState.running) {
+        stopLocalStudyCountdown();
+    }
+    await stopLiveStudySession('Study session stopped before leaving room.');
+
     clearErrors();
     try {
         const res = await fetchWithTimeout(`${API_BASE}/${activeRoom}/leave`, {
@@ -1007,6 +1587,7 @@ async function leaveRoom() {
         }
 
         const data = await res.json();
+        clearStudyTimerSnapshot();
         resetRoomContext();
         await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
         showView('hub');
@@ -1030,6 +1611,11 @@ async function deleteRoom() {
         return;
     }
 
+    if (studyState.running) {
+        stopLocalStudyCountdown();
+    }
+    await stopLiveStudySession('Study session stopped before deleting room.');
+
     clearErrors();
     try {
         const res = await fetchWithTimeout(`${API_BASE}/${activeRoom}`, {
@@ -1042,6 +1628,7 @@ async function deleteRoom() {
             return;
         }
 
+        clearStudyTimerSnapshot();
         resetRoomContext();
         await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
         showView('hub');
@@ -1059,6 +1646,9 @@ ui.mainAiBtn.addEventListener('click', () => {
 });
 
 ui.hubBtn.addEventListener('click', async () => {
+    if (studyState.running) {
+        stopLocalStudyCountdown();
+    }
     resetRoomContext();
     clearErrors();
     clearStatus();
@@ -1090,6 +1680,31 @@ ui.refreshMembersBtn.addEventListener('click', () => loadMembers());
 ui.refreshRequestsBtn.addEventListener('click', () => loadJoinRequests());
 ui.leaveRoomBtn.addEventListener('click', leaveRoom);
 ui.deleteRoomBtn.addEventListener('click', deleteRoom);
+
+ui.studyModeButtons.forEach((button) => {
+    button.addEventListener('click', async () => {
+        const modeKey = button.dataset.modeKey;
+        await setStudyMode(modeKey);
+    });
+});
+
+if (ui.studyToggleBtn) {
+    ui.studyToggleBtn.addEventListener('click', async () => {
+        await handleStudyToggle();
+    });
+}
+
+if (ui.studyResetBtn) {
+    ui.studyResetBtn.addEventListener('click', async () => {
+        await handleStudyReset();
+    });
+}
+
+if (ui.refreshStudyBtn) {
+    ui.refreshStudyBtn.addEventListener('click', async () => {
+        await loadStudyStats(true);
+    });
+}
 
 if (ui.notificationBtn) {
     ui.notificationBtn.addEventListener('click', async (event) => {
@@ -1217,6 +1832,11 @@ document.getElementById('submit-invite-btn').addEventListener('click', async () 
         const data = await res.json();
         ui.inviteUsername.value = '';
         setStatus('action-status', data.message || 'Invitation sent.');
+        pushActivityNotification(
+            'Invitation sent',
+            `Invitation sent to ${target}. Waiting for acceptance.`,
+            'success'
+        );
         await refreshNotifications(false);
     } catch (error) {
         showError('invite-error', getNetworkErrorMessage(error));
@@ -1280,6 +1900,9 @@ window.addEventListener('resize', () => {
 });
 
 window.onload = async () => {
+    closeNotifications();
+    renderStudyTimerUI();
+    renderStudyMembers([]);
     showView('hub');
     await Promise.all([fetchMyRooms(), refreshNotifications(false)]);
 

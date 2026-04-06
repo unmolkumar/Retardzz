@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from bson import ObjectId
 from fastapi import HTTPException
 
 from app.database import get_database
-from ..models import Room, RoomInvitation, RoomJoinRequest, RoomMember, RoomMessage
+from ..models import Room, RoomInvitation, RoomJoinRequest, RoomMember, RoomMessage, RoomStudyStat
 
 # Collections
 ROOM_COLLECTION = "study_rooms"
@@ -13,6 +13,7 @@ MEMBER_COLLECTION = "study_room_members"
 MESSAGE_COLLECTION = "study_room_messages"
 INVITATION_COLLECTION = "study_room_invitations"
 JOIN_REQUEST_COLLECTION = "study_room_join_requests"
+STUDY_STATS_COLLECTION = "study_room_study_stats"
 USER_COLLECTION = "users"
 
 # Status values
@@ -20,6 +21,13 @@ STATUS_PENDING = "pending"
 STATUS_ACCEPTED = "accepted"
 STATUS_REJECTED = "rejected"
 STATUS_APPROVED = "approved"
+
+# Study timer values
+VALID_STUDY_MODES = {"focus", "short", "long"}
+DEFAULT_STUDY_MODE = "focus"
+MIN_STUDY_DURATION_SECONDS = 60
+MAX_STUDY_DURATION_SECONDS = 14400
+DEFAULT_STUDY_DURATION_SECONDS = 1500
 
 
 def _utcnow() -> datetime:
@@ -34,6 +42,86 @@ def _to_object_id(value: str, label: str = "id") -> ObjectId:
 	if not ObjectId.is_valid(value):
 		raise HTTPException(status_code=400, detail=f"Invalid {label}")
 	return ObjectId(value)
+
+
+def _safe_elapsed_seconds(started_at: datetime, now: datetime) -> int:
+	if not started_at:
+		return 0
+	if started_at.tzinfo is None:
+		started_at = started_at.replace(tzinfo=timezone.utc)
+	return max(0, int((now - started_at).total_seconds()))
+
+
+def _today_key(now: Optional[datetime] = None) -> str:
+	current = now or _utcnow()
+	return current.date().isoformat()
+
+
+def _normalize_mode_key(mode_key: Optional[str]) -> str:
+	value = (mode_key or DEFAULT_STUDY_MODE).strip().lower()
+	if value not in VALID_STUDY_MODES:
+		raise HTTPException(status_code=400, detail="Invalid study mode")
+	return value
+
+
+def _normalize_duration_seconds(duration_seconds: Optional[int]) -> int:
+	if duration_seconds is None:
+		return DEFAULT_STUDY_DURATION_SECONDS
+	value = int(duration_seconds)
+	if value < MIN_STUDY_DURATION_SECONDS or value > MAX_STUDY_DURATION_SECONDS:
+		raise HTTPException(status_code=400, detail="Invalid study duration")
+	return value
+
+
+def _stats_doc_date_key(stats_doc: dict, now: datetime) -> str:
+	return str(stats_doc.get("date_key") or _today_key(now))
+
+
+def _effective_elapsed_seconds(stats_doc: dict, now: datetime) -> int:
+	started_at = stats_doc.get("started_at")
+	if not isinstance(started_at, datetime):
+		return 0
+	elapsed = _safe_elapsed_seconds(started_at, now)
+	target = stats_doc.get("active_target_seconds")
+	if isinstance(target, int) and target > 0:
+		return min(elapsed, target)
+	return elapsed
+
+
+async def _finalize_live_study_doc(study_stats_coll, stats_doc: dict, now: datetime) -> dict:
+	elapsed = _effective_elapsed_seconds(stats_doc, now)
+	new_total = int(stats_doc.get("total_seconds", 0)) + elapsed
+	date_key = _stats_doc_date_key(stats_doc, now)
+
+	await study_stats_coll.update_one(
+		{"_id": stats_doc["_id"]},
+		{
+			"$set": {
+				"total_seconds": new_total,
+				"is_live": False,
+				"started_at": None,
+				"active_mode_key": None,
+				"active_target_seconds": None,
+				"updated_at": now,
+				"date_key": date_key,
+			}
+		},
+	)
+
+	stats_doc["total_seconds"] = new_total
+	stats_doc["is_live"] = False
+	stats_doc["started_at"] = None
+	stats_doc["active_mode_key"] = None
+	stats_doc["active_target_seconds"] = None
+	stats_doc["updated_at"] = now
+	stats_doc["date_key"] = date_key
+	return stats_doc
+
+
+async def _discard_other_live_sessions(study_stats_coll, username: str, now: datetime):
+	live_docs = await study_stats_coll.find({"username": username, "is_live": True}).to_list(length=50)
+	for live_doc in live_docs:
+		await _finalize_live_study_doc(study_stats_coll, live_doc, now)
 
 
 def generate_invite_code(length: int = 8) -> str:
@@ -381,12 +469,192 @@ async def get_room_members(room_id: str, username: str) -> List[dict]:
 	return [_format_member_doc(doc) for doc in member_docs]
 
 
+async def get_room_study_stats(room_id: str, username: str) -> dict:
+	db = await _get_db()
+	rooms_coll = db[ROOM_COLLECTION]
+	members_coll = db[MEMBER_COLLECTION]
+	study_stats_coll = db[STUDY_STATS_COLLECTION]
+
+	await _get_room_doc_or_404(rooms_coll, room_id)
+	await _get_member_doc(members_coll, room_id, username)
+
+	now = _utcnow()
+	today_key = _today_key(now)
+
+	member_docs = await members_coll.find({"room_id": room_id}).to_list(length=300)
+	member_usernames = [member_doc["username"] for member_doc in member_docs]
+
+	stats_docs = await study_stats_coll.find(
+		{"room_id": room_id, "date_key": today_key, "username": {"$in": member_usernames}}
+	).to_list(length=300)
+	stats_map = {stats_doc["username"]: stats_doc for stats_doc in stats_docs}
+
+	result = []
+	for member_doc in member_docs:
+		member_username = member_doc["username"]
+		stats_doc = stats_map.get(member_username)
+
+		if not stats_doc:
+			result.append(
+				{
+					"username": member_username,
+					"total_seconds": 0,
+					"is_live": False,
+					"date_key": today_key,
+					"started_at": None,
+					"active_mode_key": None,
+					"active_target_seconds": None,
+					"updated_at": None,
+				}
+			)
+			continue
+
+		date_key = _stats_doc_date_key(stats_doc, now)
+		is_live = bool(stats_doc.get("is_live", False))
+		total_seconds = int(stats_doc.get("total_seconds", 0))
+		started_at = stats_doc.get("started_at")
+
+		if is_live:
+			elapsed = _effective_elapsed_seconds(stats_doc, now)
+			target = stats_doc.get("active_target_seconds")
+			if isinstance(target, int) and target > 0 and elapsed >= target:
+				stats_doc = await _finalize_live_study_doc(study_stats_coll, stats_doc, now)
+				is_live = False
+				total_seconds = int(stats_doc.get("total_seconds", 0))
+				started_at = None
+			else:
+				total_seconds += elapsed
+
+		result.append(
+			{
+				"username": member_username,
+				"total_seconds": total_seconds,
+				"is_live": is_live,
+				"date_key": date_key,
+				"started_at": started_at,
+				"active_mode_key": stats_doc.get("active_mode_key"),
+				"active_target_seconds": stats_doc.get("active_target_seconds"),
+				"updated_at": stats_doc.get("updated_at"),
+			}
+		)
+
+	result.sort(key=lambda item: (not item["is_live"], -item["total_seconds"], item["username"]))
+	live_count = sum(1 for entry in result if entry["is_live"])
+
+	return {"members": result, "live_count": live_count, "date_key": today_key}
+
+
+async def start_study_session(
+	room_id: str,
+	username: str,
+	mode_key: str = DEFAULT_STUDY_MODE,
+	duration_seconds: int = DEFAULT_STUDY_DURATION_SECONDS,
+) -> dict:
+	db = await _get_db()
+	rooms_coll = db[ROOM_COLLECTION]
+	members_coll = db[MEMBER_COLLECTION]
+	study_stats_coll = db[STUDY_STATS_COLLECTION]
+
+	await _get_room_doc_or_404(rooms_coll, room_id)
+	await _get_member_doc(members_coll, room_id, username)
+
+	mode_value = _normalize_mode_key(mode_key)
+	duration_value = _normalize_duration_seconds(duration_seconds)
+
+	now = _utcnow()
+	today_key = _today_key(now)
+
+	await _discard_other_live_sessions(study_stats_coll, username, now)
+
+	stats_doc = await study_stats_coll.find_one({"room_id": room_id, "username": username, "date_key": today_key})
+	if not stats_doc:
+		new_stats = RoomStudyStat.create(
+			room_id=room_id,
+			username=username,
+			date_key=today_key,
+			mode_key=mode_value,
+			target_seconds=duration_value,
+		)
+		await study_stats_coll.insert_one(new_stats.to_document())
+		return {
+			"message": "Study session started.",
+			"total_seconds": 0,
+			"is_live": True,
+			"date_key": today_key,
+		}
+
+	total_seconds = int(stats_doc.get("total_seconds", 0))
+	if stats_doc.get("is_live"):
+		stats_doc = await _finalize_live_study_doc(study_stats_coll, stats_doc, now)
+		total_seconds = int(stats_doc.get("total_seconds", 0))
+
+	await study_stats_coll.update_one(
+		{"_id": stats_doc["_id"]},
+		{
+			"$set": {
+				"is_live": True,
+				"started_at": now,
+				"active_mode_key": mode_value,
+				"active_target_seconds": duration_value,
+				"updated_at": now,
+				"date_key": today_key,
+			}
+		},
+	)
+
+	return {
+		"message": "Study session started.",
+		"total_seconds": total_seconds,
+		"is_live": True,
+		"date_key": today_key,
+	}
+
+
+async def stop_study_session(room_id: str, username: str) -> dict:
+	db = await _get_db()
+	rooms_coll = db[ROOM_COLLECTION]
+	members_coll = db[MEMBER_COLLECTION]
+	study_stats_coll = db[STUDY_STATS_COLLECTION]
+
+	await _get_room_doc_or_404(rooms_coll, room_id)
+	await _get_member_doc(members_coll, room_id, username)
+
+	now = _utcnow()
+	today_key = _today_key(now)
+
+	stats_doc = await study_stats_coll.find_one(
+		{"room_id": room_id, "username": username, "is_live": True},
+		sort=[("updated_at", -1)],
+	)
+	if not stats_doc:
+		latest_doc = await study_stats_coll.find_one(
+			{"room_id": room_id, "username": username, "date_key": today_key},
+			sort=[("updated_at", -1)],
+		)
+		total_seconds = int((latest_doc or {}).get("total_seconds", 0))
+		return {
+			"message": "Study session already stopped.",
+			"total_seconds": total_seconds,
+			"is_live": False,
+			"date_key": today_key,
+		}
+
+	final_doc = await _finalize_live_study_doc(study_stats_coll, stats_doc, now)
+	return {
+		"message": "Study session stopped.",
+		"total_seconds": int(final_doc.get("total_seconds", 0)),
+		"is_live": False,
+		"date_key": _stats_doc_date_key(final_doc, now),
+	}
+
+
 async def remove_member_from_room(room_id: str, admin_username: str, target_username: str) -> dict:
 	db = await _get_db()
 	members_coll = db[MEMBER_COLLECTION]
 	rooms_coll = db[ROOM_COLLECTION]
 	invitations_coll = db[INVITATION_COLLECTION]
 	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
+	study_stats_coll = db[STUDY_STATS_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	admin_member_doc = await _get_member_doc(members_coll, room_id, admin_username)
@@ -411,6 +679,7 @@ async def remove_member_from_room(room_id: str, admin_username: str, target_user
 		{"room_id": room_id, "requester_username": target_username, "status": STATUS_PENDING},
 		{"$set": {"status": STATUS_REJECTED, "reviewed_at": _utcnow(), "reviewed_by": admin_username}},
 	)
+	await study_stats_coll.delete_many({"room_id": room_id, "username": target_username})
 
 	return {"message": f"Removed {target_username} from room."}
 
@@ -421,6 +690,7 @@ async def leave_room(room_id: str, username: str) -> dict:
 	rooms_coll = db[ROOM_COLLECTION]
 	invitations_coll = db[INVITATION_COLLECTION]
 	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
+	study_stats_coll = db[STUDY_STATS_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	member_doc = await _get_member_doc(members_coll, room_id, username)
@@ -438,6 +708,7 @@ async def leave_room(room_id: str, username: str) -> dict:
 		{"room_id": room_id, "requester_username": username, "status": STATUS_PENDING},
 		{"$set": {"status": STATUS_REJECTED, "reviewed_at": _utcnow(), "reviewed_by": "self-left"}},
 	)
+	await study_stats_coll.delete_many({"room_id": room_id, "username": username})
 
 	return {"message": "You left the room.", "room_deleted": False, "new_admin_username": None}
 
@@ -449,6 +720,7 @@ async def delete_room(room_id: str, admin_username: str) -> dict:
 	messages_coll = db[MESSAGE_COLLECTION]
 	invitations_coll = db[INVITATION_COLLECTION]
 	join_requests_coll = db[JOIN_REQUEST_COLLECTION]
+	study_stats_coll = db[STUDY_STATS_COLLECTION]
 
 	room_doc = await _get_room_doc_or_404(rooms_coll, room_id)
 	admin_member_doc = await _get_member_doc(members_coll, room_id, admin_username)
@@ -459,6 +731,7 @@ async def delete_room(room_id: str, admin_username: str) -> dict:
 	await messages_coll.delete_many({"room_id": room_id})
 	await invitations_coll.delete_many({"room_id": room_id})
 	await join_requests_coll.delete_many({"room_id": room_id})
+	await study_stats_coll.delete_many({"room_id": room_id})
 
 	return {"message": "Room deleted successfully."}
 
